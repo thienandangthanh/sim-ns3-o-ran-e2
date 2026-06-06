@@ -11,6 +11,14 @@
  * the Phase-3 printable placeholder.  This makes the advertised function genuine
  * so a Phase-5 subscriber can parse the styles; M3 acceptance is unchanged.
  *
+ * Phase 5 (subscription handling): the node now also registers a subscription
+ * callback (kpm-subscription-handler.h).  When the live submgr forwards a
+ * kpimon-go RICsubscriptionRequest for our KPM function, the callback admits the
+ * first REPORT action and replies RICsubscriptionResponse(success) (M4).  The
+ * callback is registered under func id 2 (kpimon-go subscribes func 2) AND func
+ * id 0 (scp-kpimon fallback) so either subscriber is handled.  Indication
+ * emission for the admitted action is deferred to Phase 6.
+ *
  * Builds standalone against the installed libe2sim (no ns-3 dependency).
  * Usage: ./e2-setup-minimal <e2term-ip> <e2term-port>
  *   e.g: ./e2-setup-minimal 192.168.122.78 32222
@@ -33,9 +41,38 @@
 /* Use installed headers — angle brackets, path-prefix included in CFLAGS. */
 #include "e2sim.hpp"
 #include "kpm-func-desc-v3.h"
+#include "kpm-subscription-handler.h"
 
 extern "C" {
 #include "OCTET_STRING.h"
+}
+
+#include <vector>
+
+/* The SubscriptionCallback ABI is a plain C function pointer (void(*)(E2AP_PDU*))
+ * with no user-data slot, so the E2Sim instance is reached via a file-scope
+ * pointer — same pattern as the OSC kpm_sim reference. */
+static E2Sim *g_e2sim = nullptr;
+
+/* Live RICsubscriptionRequest handler (M4).  Builds the success response off the
+ * thread that reads SCTP, then sends it.  See kpm-subscription-handler.h for the
+ * accept policy and the deliberate no-free of the response PDU. */
+static void
+HandleKpmSubscription (E2AP_PDU_t *req)
+{
+    std::vector<long> accepted, rejected;
+    E2AP_PDU_t *resp = kpm_v3::BuildSubscriptionResponse (*g_e2sim, req, accepted, rejected);
+    if (!resp) {
+        fprintf (stderr, "[e2-setup-minimal] subscription parse failed; no response sent\n");
+        return;
+    }
+    fprintf (stderr,
+             "[e2-setup-minimal] RICsubscriptionRequest handled: %zu action(s) admitted, "
+             "%zu rejected -> sending RICsubscriptionResponse(success)\n",
+             accepted.size (), rejected.size ());
+    g_e2sim->encode_and_send_sctp_data (resp);
+    /* Phase 6 will start the RIC indication report loop for the admitted action
+     * here.  resp is intentionally not freed (see handler header). */
 }
 
 int main(int argc, char* argv[]) {
@@ -66,9 +103,16 @@ int main(int argc, char* argv[]) {
     func_desc->size = desc_len;
 
     E2Sim e2sim;
-    /* RAN function id=2 mirrors the OSC kpm_sim (Phase-2 evidence).
-     * Q3 (id 2 vs 0 for scp-kpimon) deferred to Phase 5. */
+    g_e2sim = &e2sim;
+    /* RAN function id=2 mirrors the OSC kpm_sim (Phase-2 evidence) and matches
+     * kpimon-go, which hardcodes funcId=2 (control/control.go) — Q3 resolved. */
     e2sim.register_e2sm(2, func_desc);
+
+    /* Phase 5: handle RICsubscriptionRequest for our KPM function (M4).
+     * Register under func 2 (kpimon-go) and func 0 (scp-kpimon fallback); the
+     * dispatcher keys the callback off the func id carried in the request. */
+    e2sim.register_subscription_callback(2, HandleKpmSubscription);
+    e2sim.register_subscription_callback(0, HandleKpmSubscription);
 
     /* Delegate to libe2sim run_loop: connects SCTP, generates E2setupRequest
      * (GlobalE2node-ID, E2nodeComponentConfigAddition v3.01 IEs), sends it,
