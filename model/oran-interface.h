@@ -21,141 +21,181 @@
  *		   Tommaso Zugno <tommasozugno@gmail.com>
  *		   Michele Polese <michele.polese@gmail.com>
  */
- 
+
 #ifndef ORAN_INTERFACE_H
 #define ORAN_INTERFACE_H
 
 #include "ns3/object.h"
 #include <ns3/kpm-indication.h>
 #include <ns3/kpm-function-description.h>
-#include <ns3/ric-control-function-description.h>
-#include <ns3/ric-control-message.h>
+#include <ns3/function-description.h>
+/* E2SM-RC (RAN Control) deferred per KPM-only L-release migration; the OSC
+ * e2sim install (/usr/local/include/e2sim) ships no E2SM-RC asn1c types.
+ * ric-control-message.cc/.h and ric-control-function-description.cc/.h are
+ * excluded from build.  Minimal stubs below keep lte-enb-net-device.cc
+ * (src/lte) and mmwave-enb-net-device.cc (src/mmwave) compiling. */
 #include "e2sim.hpp"
+#include <functional>
+#include <unordered_map>
+#include <cstdint>
+
+/* SubscriptionCallback in v3 e2sim.hpp is void(*)(E2AP_PDU_t*) — a raw function
+ * pointer that cannot hold std::bind results.  E2TermCallback wraps both raw
+ * pointers and std::bind functors so callers in lte/mmwave need no changes. */
+using E2TermCallback = std::function<void(E2AP_PDU_t *)>;
+
+/* SmCallback kept for source-compatibility with lte/mmwave callers that still
+ * reference it. It is the same erasure type as E2TermCallback. */
+using SmCallback = E2TermCallback;
 
 namespace ns3 {
-  
-  class E2Termination : public Object 
+
+/* ==========================================================================
+ * Minimal stub types for E2SM-RC — E2SM-RC ASN.1 headers are absent from the
+ * v3 asn1c install.  These stubs expose only the members accessed by
+ * lte-enb-net-device.cc so that translation unit compiles; the RC control path
+ * is dead code in the KPM-only scenario (ControlMessageReceivedCallback is
+ * never invoked via the live E2 path).
+ * ========================================================================== */
+
+/** Stub for E2SM_RC_ControlHeader_Format1_t::ueId (OCTET_STRING shape). */
+struct RcControlHeaderUeId_t
+{
+  uint8_t *buf  {nullptr};
+  std::size_t size {0};
+};
+
+/** Stub for E2SM_RC_ControlHeader_Format1_t. */
+struct RcControlHeaderFormat1Stub
+{
+  RcControlHeaderUeId_t ueId;
+};
+
+/** Stub for RicControlMessage — compile shim, no real decoding. */
+class RicControlMessage : public SimpleRefCount<RicControlMessage>
+{
+public:
+  enum ControlMessageRequestIdType { TS = 1001, QoS = 1002 };
+
+  explicit RicControlMessage (E2AP_PDU_t * /*pdu*/)
+      : m_requestType (TS), m_e2SmRcControlHeaderFormat1 (new RcControlHeaderFormat1Stub ())
   {
-    public:
+  }
 
-      E2Termination();
+  ~RicControlMessage ()
+  {
+    delete m_e2SmRcControlHeaderFormat1;
+  }
 
-      /**
-      *
-      * \param ricAddress RIC IP address
-      * \param ricPort RIC port
-      * \param clientPort the local port to which the client will bind 
-      * \param gnbId the GNB ID
-      * \param plmnId the PLMN ID
-      */
-      E2Termination(const std::string ricAddress, 
-                  const uint16_t ricPort,
-                  const uint16_t clientPort,
-                  const std::string gnbId,
-                  const std::string plmnId);
-      
-      virtual ~E2Termination ();
-      
-      /**
-      *  inherited from Object
-      * @return
-      */
-      static TypeId GetTypeId();
-      
-      /**
-      * Start the E2 termination.
-      * Create a separate thread to host the execution of e2sim. The thread will 
-      * execute the method DoStart.  
-      */
-      void Start ();
-      
-      /**
-      * Register an E2 Service Model.
-      * Create a RAN Function Description item containing the configurations 
-      * for the SM, add it to the list of supported RAN functions, and 
-      * register a callback.
-      * Whenever a RIC Subscription Request to this RAN Function is received, 
-      * the callback is triggered.  
-      *
-      * \param ranFunctionId ID used to identify the KPM RAN Function
-      * \param ranFunctionDescription 
-      * \param cb callback that will be triggered if the RIC subscribes to 
-      *        this function
-      */
-      void RegisterKpmCallbackToE2Sm (long ranFunctionId, 
-                         Ptr<FunctionDescription> ranFunctionDescription, 
-                         SubscriptionCallback sbCb);
+  ControlMessageRequestIdType m_requestType;
+  RcControlHeaderFormat1Stub *m_e2SmRcControlHeaderFormat1;
 
-      /**
-      * Register an E2 Service Model.
-      * Create a RAN Function Description item containing the configurations 
-      * for the SM, add it to the list of supported RAN functions, and 
-      * register a callback.
-      * Whenever a Sm message to this RAN Function is received, 
-      * the callback is triggered.  
-      *
-      * \param ranFunctionId ID used to identify the KPM RAN Function
-      * \param ranFunctionDescription 
-      * \param cb callback that will be triggered if the RIC subscribes to 
-      *        this function
-      */
-      void RegisterSmCallbackToE2Sm (long ranFunctionId,
-                                     Ptr<FunctionDescription> ranFunctionDescription,
-                                     SmCallback smCb);
+  std::string GetSecondaryCellIdHO () const
+  {
+    return "";
+  }
+};
 
-      /**
-      * Struct holding the values returned by ProcessRicSubscriptionRequest
-      */
-      struct RicSubscriptionRequest_rval_s
-      {
-        uint16_t requestorId; //!< RIC Requestor ID
-        uint16_t instanceId; //!< RIC Instance ID
-        uint16_t ranFuncionId; //!< RAN Function ID
-        uint8_t actionId; //!< RIC Action ID
-      }; 
+/** Stub for RicControlFunctionDescription — compile shim only. */
+class RicControlFunctionDescription : public FunctionDescription
+{
+public:
+  RicControlFunctionDescription ()
+  {
+    m_buffer = nullptr;
+    m_size   = 0;
+  }
+  ~RicControlFunctionDescription () {}
+};
 
-      /**
-      * Process RIC Subscription Request.
-      * This function processes the RIC Subscription Request and sends the 
-      * RIC Subscription Response.
-      *
-      * \param sub_req_pdu request message
-      * \return RIC subscription request parameters
-      */
-      RicSubscriptionRequest_rval_s ProcessRicSubscriptionRequest (E2AP_PDU_t* sub_req_pdu);
+/* ========================================================================== */
 
-      /**
-      * Sends an E2 message to the RIC
-      * This function encodes and sends an E2 message to the RIC
-      *
-      * \param pdu the PDU of the message
-      */
-      void SendE2Message (E2AP_PDU* pdu);   
+class E2Termination : public Object
+{
+public:
+  E2Termination ();
 
-    private:
-      /**
-      * Run the e2sim main loop.
-      * Starts the e2sim main loop, it will open a socket towards the RIC and 
-      * start the reception routine.
-      */
-      void DoStart ();
+  /**
+   * \param ricAddress RIC IP address
+   * \param ricPort RIC port
+   * \param clientPort the local port to which the client will bind
+   * \param gnbId the GNB ID
+   * \param plmnId the PLMN ID
+   */
+  E2Termination (const std::string ricAddress, const uint16_t ricPort,
+                 const uint16_t clientPort, const std::string gnbId,
+                 const std::string plmnId);
 
-      /**
-       * \brief Accessory function to populate to the registration of the ran function description to e2sim
-       * 
-       * \param ranFunctionId 
-       * \param ranFunctionDescription 
-       */
-      void RegisterFunctionDescToE2Sm (long ranFunctionId,
-                                Ptr<FunctionDescription> ranFunctionDescription);
+  virtual ~E2Termination ();
 
-      E2Sim* m_e2sim; //!< pointer to an instance of the O-RAN E2 simulator
-      std::string m_ricAddress; //!< IP address of the RIC
-      uint16_t m_ricPort; //!< port of the RIC
-      uint16_t m_clientPort; //!< local bind port
-      std::string m_gnbId; //!< GNB id
-      std::string m_plmnId; //!< PLMN Id
+  /** inherited from Object */
+  static TypeId GetTypeId ();
+
+  /**
+   * Start the E2 termination.
+   * Creates a separate thread to host the execution of e2sim.
+   */
+  void Start ();
+
+  /**
+   * Register a KPM Service Model callback.
+   * Accepts std::bind results as well as raw function pointers.
+   */
+  void RegisterKpmCallbackToE2Sm (long ranFunctionId,
+                                  Ptr<FunctionDescription> ranFunctionDescription,
+                                  E2TermCallback sbCb);
+
+  /**
+   * Register an E2SM-RC (Sm) callback — compile shim for lte/mmwave callers.
+   * The RC control path is excluded; this registers the same slot as KPM.
+   */
+  void RegisterSmCallbackToE2Sm (long ranFunctionId,
+                                 Ptr<FunctionDescription> ranFunctionDescription,
+                                 SmCallback smCb);
+
+  /** Struct holding the values returned by ProcessRicSubscriptionRequest */
+  struct RicSubscriptionRequest_rval_s
+  {
+    uint16_t requestorId;  //!< RIC Requestor ID
+    uint16_t instanceId;   //!< RIC Instance ID
+    uint16_t ranFuncionId; //!< RAN Function ID
+    uint8_t  actionId;     //!< RIC Action ID
   };
-}
+
+  /**
+   * Process RIC Subscription Request.
+   */
+  RicSubscriptionRequest_rval_s ProcessRicSubscriptionRequest (E2AP_PDU_t *sub_req_pdu);
+
+  /**
+   * Sends an E2 message to the RIC.
+   */
+  void SendE2Message (E2AP_PDU *pdu);
+
+private:
+  void DoStart ();
+
+  void RegisterFunctionDescToE2Sm (long ranFunctionId,
+                                   Ptr<FunctionDescription> ranFunctionDescription);
+
+  /**
+   * Register an E2TermCallback (std::function) for a given RAN function ID.
+   * Stores the function in m_callbacks and registers a static trampoline with
+   * e2sim so that the raw SubscriptionCallback slot is satisfied.
+   */
+  void StoreAndRegisterCallback (long ranFunctionId, E2TermCallback cb);
+
+  /** Per-function std::function callbacks (supports std::bind / lambdas). */
+  std::unordered_map<long, E2TermCallback> m_callbacks;
+
+  E2Sim *       m_e2sim;       //!< pointer to an instance of the O-RAN E2 simulator
+  std::string   m_ricAddress;  //!< IP address of the RIC
+  uint16_t      m_ricPort;     //!< port of the RIC
+  uint16_t      m_clientPort;  //!< local bind port
+  std::string   m_gnbId;       //!< GNB id
+  std::string   m_plmnId;      //!< PLMN Id
+};
+
+} // namespace ns3
 
 #endif /* ORAN_INTERFACE_H */
