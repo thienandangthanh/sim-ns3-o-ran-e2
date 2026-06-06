@@ -1,9 +1,15 @@
 /*
- * e2-setup-minimal.cc — Phase 3 standalone E2 Setup test app.
+ * e2-setup-minimal.cc — Phase 3/4 standalone E2 Setup test app.
  *
  * Registers a single KPM RAN function (id=2, OID="OID123", rev=2) with the
  * vendored OSC libe2sim (E2AP v3.01) and runs the E2 setup exchange against
  * the live L-release E2Term.
+ *
+ * Phase 4 (area C): the registered ranFunctionDefinition is now a *real*
+ * E2SM-KPM v3.00 RAN-function-description (built by kpm-func-desc-v3.h: 1
+ * Periodic-Report trigger style + 5 report styles + 9 measurements), replacing
+ * the Phase-3 printable placeholder.  This makes the advertised function genuine
+ * so a Phase-5 subscriber can parse the styles; M3 acceptance is unchanged.
  *
  * Builds standalone against the installed libe2sim (no ns-3 dependency).
  * Usage: ./e2-setup-minimal <e2term-ip> <e2term-port>
@@ -13,7 +19,7 @@
  *   - connects SCTP to the supplied IP:port
  *   - reads ran_functions_registered and builds GlobalE2node-ID + E2setupRequest
  *   - hardcodes ranFunctionOId = "OID123", ranFunctionRev = 2
- * So we only need to register a dummy function descriptor to get a non-empty list.
+ * and emits the registered OCTET_STRING as the ranFunctionDefinition IE.
  *
  * Adapter boundary:  all v3 struct/symbol renames (ProtocolIE-Container 85P21,
  *   ric_Style_Type, QosFlowIdentifier, S-NSSAI) are owned by the installed
@@ -26,6 +32,7 @@
 
 /* Use installed headers — angle brackets, path-prefix included in CFLAGS. */
 #include "e2sim.hpp"
+#include "kpm-func-desc-v3.h"
 
 extern "C" {
 #include "OCTET_STRING.h"
@@ -38,15 +45,25 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    /* Build a dummy E2SM function descriptor buffer (single NUL byte is enough;
-     * the E2term accepts the setup regardless of the descriptor content — it is
-     * the OID string that governs acceptance, and OID123 is hardcoded in
-     * libe2sim's run_loop).  A real KPM v3.00 descriptor is ported in Phase 4. */
+    /* Build + APER-encode the real E2SM-KPM v3.00 RAN-function-description and
+     * register it as the ranFunctionDefinition.  E2Term accepts the setup
+     * regardless of descriptor content (OID123, hardcoded in run_loop, governs
+     * acceptance), but the genuine descriptor is required for Phase-5 subscribe. */
+    E2SM_KPM_RANfunction_Description_t *kpm_desc =
+        (E2SM_KPM_RANfunction_Description_t*)calloc(1, sizeof(E2SM_KPM_RANfunction_Description_t));
+    kpm_v3::FillKpmFunctionDescription(kpm_desc);
+
+    uint8_t *desc_buf = nullptr;
+    long desc_len = kpm_v3::EncodeKpmFunctionDescription(kpm_desc, &desc_buf);
+    if (desc_len <= 0) {
+        fprintf(stderr, "Error: failed to encode E2SM-KPM v3.00 descriptor (%ld)\n", desc_len);
+        return 1;
+    }
+    fprintf(stderr, "[e2-setup-minimal] E2SM-KPM v3.00 descriptor: %ld bytes\n", desc_len);
+
     OCTET_STRING_t *func_desc = (OCTET_STRING_t*)calloc(1, sizeof(OCTET_STRING_t));
-    const char dummy_desc[] = "ORAN-E2SM-KPM";   /* printable; assert-pcap checks ASCII */
-    func_desc->buf  = (uint8_t*)calloc(1, sizeof(dummy_desc));
-    func_desc->size = sizeof(dummy_desc) - 1;    /* exclude NUL */
-    memcpy(func_desc->buf, dummy_desc, func_desc->size);
+    func_desc->buf  = desc_buf;          /* APER bytes own buffer (freed at exit) */
+    func_desc->size = desc_len;
 
     E2Sim e2sim;
     /* RAN function id=2 mirrors the OSC kpm_sim (Phase-2 evidence).

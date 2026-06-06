@@ -29,6 +29,9 @@
 extern "C" {
 #include "RIC-EventTriggerStyle-Item.h"
 #include "RIC-ReportStyle-Item.h"
+#include "MeasurementInfo-Action-List.h"
+#include "MeasurementInfo-Action-Item.h"
+#include "MeasurementTypeID.h"
 }
 
 namespace ns3 {
@@ -68,45 +71,60 @@ KpmFunctionDescription::Encode (E2SM_KPM_RANfunction_Description_t *descriptor)
   m_size = encodedMsg.result.encoded;
 }
 
+// E2SM-KPM v3.00 advertised measurements (golden parity with OSC encode_kpm.cpp).
+static const char *const g_kpmPerfMeasurements[] = {
+    "DRB.RlcSduTransmittedVolumeDL", "DRB.RlcSduTransmittedVolumeUL",
+    "DRB.PerDataVolumeDLDist.Bin",   "DRB.PerDataVolumeULDist.Bin",
+    "DRB.RlcPacketDropRateDLDist",   "DRB.PacketLossRateULDist",
+    "L1M.DL-SS-RSRP.SSB",            "L1M.DL-SS-SINR.SSB",
+    "L1M.UL-SRS-RSRP"};
+static const int g_kpmNumberMeasurements = 9;
+
+// Fill an OCTET_STRING/PrintableString from a NUL-terminated C string.
+static void
+SetKpmOctetString (OCTET_STRING_t *os, const char *s)
+{
+  os->size = (int) strlen (s);
+  os->buf = (uint8_t *) calloc (1, os->size ? os->size : 1);
+  memcpy (os->buf, s, os->size);
+}
+
+// Populate an (embedded) measInfo action list with the 9 KPM measurements.
+// Each report style gets its own list so ASN_STRUCT_FREE stays double-free safe.
+static void
+BuildKpmMeasInfoActionList (MeasurementInfo_Action_List_t *list)
+{
+  for (int i = 0; i < g_kpmNumberMeasurements; i++)
+    {
+      MeasurementInfo_Action_Item_t *item =
+          (MeasurementInfo_Action_Item_t *) calloc (1, sizeof (MeasurementInfo_Action_Item_t));
+      SetKpmOctetString (&item->measName, g_kpmPerfMeasurements[i]);
+      item->measID = (MeasurementTypeID_t *) calloc (1, sizeof (MeasurementTypeID_t));
+      *item->measID = i + 1;
+      ASN_SEQUENCE_ADD (&list->list, item);
+    }
+}
+
 void
 KpmFunctionDescription::FillAndEncodeKpmFunctionDescription (
     E2SM_KPM_RANfunction_Description_t *ranfunc_desc)
 {
-  std::string shortNameBuffer = "ORAN-WG3-KPM";
-  uint8_t *descriptionBuffer = (uint8_t *) "KPM monitor";
-  uint8_t *oidBuffer = (uint8_t *) "OID123"; // this is optional, dummy value
-
+  // RANfunction-Name. ShortName via the OctetString wrapper (ns-3 idiom);
+  // OID123 kept to match the L-release golden (Phase-4 OID decision).
+  std::string shortNameBuffer = "ORAN-E2SM-KPM";
   Ptr<OctetString> shortName = Create<OctetString> (shortNameBuffer, shortNameBuffer.size ());
-
   ranfunc_desc->ranFunction_Name.ranFunction_ShortName = shortName->GetValue ();
 
-  long *inst = (long *) calloc (1, sizeof (long));
+  SetKpmOctetString (&ranfunc_desc->ranFunction_Name.ranFunction_Description, "KPM Monitor");
+  SetKpmOctetString (&ranfunc_desc->ranFunction_Name.ranFunction_E2SM_OID, "OID123");
+  ranfunc_desc->ranFunction_Name.ranFunction_Instance = (long *) calloc (1, sizeof (long));
+  *ranfunc_desc->ranFunction_Name.ranFunction_Instance = 1;
 
-  //  ranfunc_desc->ranFunction_Name.ranFunction_Description = (OCTET_STRING_t*)calloc(1, sizeof(OCTET_STRING_t));
-  ranfunc_desc->ranFunction_Name.ranFunction_Description.buf =
-      (uint8_t *) calloc (1, strlen ((char *) descriptionBuffer));
-  memcpy (ranfunc_desc->ranFunction_Name.ranFunction_Description.buf, descriptionBuffer,
-          strlen ((char *) descriptionBuffer));
-  ranfunc_desc->ranFunction_Name.ranFunction_Description.size = strlen ((char *) descriptionBuffer);
-  ranfunc_desc->ranFunction_Name.ranFunction_Instance = inst;
-
-  //  ranfunc_desc->ranFunction_Name.ranFunction_E2SM_OID = (OCTET_STRING_t*)calloc(1, sizeof(OCTET_STRING_t));
-  ranfunc_desc->ranFunction_Name.ranFunction_E2SM_OID.buf =
-      (uint8_t *) calloc (1, strlen ((char *) oidBuffer));
-  memcpy (ranfunc_desc->ranFunction_Name.ranFunction_E2SM_OID.buf, oidBuffer,
-          strlen ((char *) oidBuffer));
-  ranfunc_desc->ranFunction_Name.ranFunction_E2SM_OID.size = strlen ((char *) oidBuffer);
-
+  // Event-trigger style list: single "Periodic Report" (format 1).
   RIC_EventTriggerStyle_Item_t *trigger_style =
       (RIC_EventTriggerStyle_Item_t *) calloc (1, sizeof (RIC_EventTriggerStyle_Item_t));
   trigger_style->ric_EventTriggerStyle_Type = 1;
-  uint8_t *eventTriggerStyleNameBuffer = (uint8_t *) "Periodic report";
-  //  trigger_style->ric_EventTriggerStyle_Name = (OCTET_STRING_t*)calloc(1, sizeof(OCTET_STRING_t));
-  trigger_style->ric_EventTriggerStyle_Name.buf =
-      (uint8_t *) calloc (1, strlen ((char *) eventTriggerStyleNameBuffer));
-  memcpy (trigger_style->ric_EventTriggerStyle_Name.buf, eventTriggerStyleNameBuffer,
-          strlen ((char *) eventTriggerStyleNameBuffer));
-  trigger_style->ric_EventTriggerStyle_Name.size = strlen ((char *) eventTriggerStyleNameBuffer);
+  SetKpmOctetString (&trigger_style->ric_EventTriggerStyle_Name, "Periodic Report");
   trigger_style->ric_EventTriggerFormat_Type = 1;
 
   ranfunc_desc->ric_EventTriggerStyle_List =
@@ -114,30 +132,42 @@ KpmFunctionDescription::FillAndEncodeKpmFunctionDescription (
            E2SM_KPM_RANfunction_Description__ric_EventTriggerStyle_List *)
           calloc (1, sizeof (E2SM_KPM_RANfunction_Description::
                                  E2SM_KPM_RANfunction_Description__ric_EventTriggerStyle_List));
-
   ASN_SEQUENCE_ADD (&ranfunc_desc->ric_EventTriggerStyle_List->list, trigger_style);
 
-  RIC_ReportStyle_Item_t *report_style1 =
-      (RIC_ReportStyle_Item_t *) calloc (1, sizeof (RIC_ReportStyle_Item_t));
-  report_style1->ric_ReportStyle_Type = 1;
+  // Report style list: 5 v3.00 styles, each with its own meas action list.
+  // v3 field renames vs Bronze v2: ric_ReportIndication*Format_Type ->
+  // ric_Indication*Format_Type; + ric_ActionFormat_Type; + measInfo_Action_List.
+  struct ReportStyleSpec
+  {
+    long type;
+    const char *name;
+    long actionFormat;
+    long indMsgFormat;
+  };
+  static const ReportStyleSpec reportStyles[] = {
+      {1, "E2 Node Measurement", 1, 1},
+      {2, "E2 Node Measurement for a single UE", 2, 1},
+      {3, "Condition-based, UE-level E2 Node Measurement", 3, 2},
+      {4, "Common Condition-based, UE-level Measurement", 4, 3},
+      {5, "E2 Node Measurement for multiple UEs", 5, 3}};
 
-  uint8_t *reportStyleNameBuffer =
-      (uint8_t *) "O-CU-CP Measurement Container for the EPC connected deployment";
-
-  //  report_style1->ric_ReportStyle_Name = (OCTET_STRING_t*)calloc(1, sizeof(OCTET_STRING_t));
-  report_style1->ric_ReportStyle_Name.buf =
-      (uint8_t *) calloc (1, strlen ((char *) reportStyleNameBuffer));
-  memcpy (report_style1->ric_ReportStyle_Name.buf, reportStyleNameBuffer,
-          strlen ((char *) reportStyleNameBuffer));
-  report_style1->ric_ReportStyle_Name.size = strlen ((char *) reportStyleNameBuffer);
-  report_style1->ric_ReportIndicationHeaderFormat_Type = 1;
-  report_style1->ric_ReportIndicationMessageFormat_Type = 1;
   ranfunc_desc->ric_ReportStyle_List =
       (E2SM_KPM_RANfunction_Description::E2SM_KPM_RANfunction_Description__ric_ReportStyle_List *)
           calloc (1, sizeof (E2SM_KPM_RANfunction_Description::
                                  E2SM_KPM_RANfunction_Description__ric_ReportStyle_List));
 
-  ASN_SEQUENCE_ADD (&ranfunc_desc->ric_ReportStyle_List->list, report_style1);
+  for (const ReportStyleSpec &spec : reportStyles)
+    {
+      RIC_ReportStyle_Item_t *report_style =
+          (RIC_ReportStyle_Item_t *) calloc (1, sizeof (RIC_ReportStyle_Item_t));
+      report_style->ric_ReportStyle_Type = spec.type;
+      SetKpmOctetString (&report_style->ric_ReportStyle_Name, spec.name);
+      report_style->ric_ActionFormat_Type = spec.actionFormat;
+      report_style->ric_IndicationHeaderFormat_Type = 1;
+      report_style->ric_IndicationMessageFormat_Type = spec.indMsgFormat;
+      BuildKpmMeasInfoActionList (&report_style->measInfo_Action_List);
+      ASN_SEQUENCE_ADD (&ranfunc_desc->ric_ReportStyle_List->list, report_style);
+    }
 
   Encode (ranfunc_desc);
 
