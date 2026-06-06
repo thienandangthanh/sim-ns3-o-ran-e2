@@ -31,33 +31,30 @@
 extern "C" {
   #include "OCTET_STRING.h"
   #include "BIT_STRING.h"
-  #include "PM-Info-Item.h"
-  #include "SNSSAI.h"
-  #include "RRCEvent.h"
-  #include "L3-RRC-Measurements.h"
-  #include "ServingCellMeasurements.h"
-  #include "MeasResultNeighCells.h"
-  #include "MeasResultNR.h"
-  #include "MeasResultEUTRA.h"
-  #include "MeasResultPCell.h"
-  #include "MeasResultListEUTRA.h"
-  #include "MeasResultListNR.h"
-  #include "MeasResultServMO.h"
-  #include "MeasResultServMOList.h"
-  #include "MeasQuantityResults.h"
-  #include "ResultsPerSSB-Index.h"
-  #include "ResultsPerCSI-RS-Index.h"
-  #include "E2SM-RC-ControlMessage-Format1.h"
-  #include "RANParameter-Item.h"
-  #include "RANParameter-ValueType.h"
-  #include "RANParameter-ELEMENT.h"
-  #include "RANParameter-STRUCTURE.h"
+  /* PM-Info-Item.h removed (v2 only) — MeasurementItem now uses plain C++ storage */
+  #include "S-NSSAI.h"   /* v3: was SNSSAI.h */
+  /* RRCEvent.h, L3-RRC-Measurements.h, ServingCellMeasurements.h, MeasResultNR.h,
+   * MeasResultEUTRA.h, MeasResultPCell.h, MeasResultListEUTRA.h,
+   * MeasResultListNR.h, MeasResultServMO.h, MeasResultServMOList.h,
+   * MeasQuantityResults.h, ResultsPerSSB-Index.h, ResultsPerCSI-RS-Index.h:
+   * all absent from v3 asn1c (were ns-O-RAN v2 E2SM-NI extensions).
+   * Classes below that previously wrapped these types are now pure C++ stubs
+   * that preserve the public API so mmwave-enb-net-device.cc compiles unchanged.
+   * The L3-RRC path is not on the KPM critical path; MeasurementItem::RRC items
+   * are emitted as PR_noValue in FillAndEncodeKpmIndicationMessage.
+   *
+   * E2SM-RC / RANParameter headers also absent from v3; RANParameterItem and
+   * ric-control-message.cc are excluded from build. */
 }
+
+#include <cstdint>
+#include <string>
+#include <vector>
 
 namespace ns3 {
 
 /**
-* Wrapper for class for OCTET STRING  
+* Wrapper for class for OCTET STRING
 */
 class OctetString : public SimpleRefCount<OctetString>
 {
@@ -75,7 +72,7 @@ private:
 };
 
 /**
-* Wrapper for class for BIT STRING  
+* Wrapper for class for BIT STRING
 */
 class BitString : public SimpleRefCount<BitString>
 {
@@ -93,18 +90,18 @@ private:
 
 class NrCellId : public SimpleRefCount<NrCellId>
 {
-public: 
+public:
   NrCellId (uint16_t value);
   virtual ~NrCellId ();
   BIT_STRING_t *GetPointer ();
   BIT_STRING_t GetValue ();
-  
-private: 
+
+private:
   Ptr<BitString> m_bitString;
 };
 
 /**
-* Wrapper for class for S-NSSAI  
+* Wrapper for class for S-NSSAI (v3: S_NSSAI_t)
 */
 class Snssai : public SimpleRefCount<Snssai>
 {
@@ -112,66 +109,64 @@ public:
   Snssai (std::string sst);
   Snssai (std::string sst, std::string sd);
   ~Snssai ();
-  SNSSAI_t *GetPointer ();
-  SNSSAI_t GetValue ();
+  S_NSSAI_t *GetPointer ();
+  S_NSSAI_t GetValue ();
 
 private:
   OCTET_STRING_t *m_sst;
   OCTET_STRING_t *m_sd;
-  SNSSAI_t *m_sNssai;
+  S_NSSAI_t *m_sNssai;
 };
 
-/**
-* Wrapper for class for MeasQuantityResults_t
-*/
+/* ==========================================================================
+ * Stub classes for v2 E2SM-NI RRC measurement wrappers.
+ *
+ * The underlying v2 asn1c types (MeasQuantityResults_t, MeasResultNR_t, etc.)
+ * are absent from the v3 asn1c install.  These stubs preserve the public API
+ * so all callers in mmwave-enb-net-device.cc and helpers compile unchanged.
+ * Internally they hold only plain C++ data; no ASN.1 encoding is performed
+ * for the RRC path (kpm-indication.cc emits PR_noValue for RRC items).
+ * ========================================================================== */
+
+/** Stub for MeasQuantityResults — holds RSRP/RSRQ/SINR as plain longs. */
 class MeasQuantityResultsWrap : public SimpleRefCount<MeasQuantityResultsWrap>
 {
 public:
   MeasQuantityResultsWrap ();
   ~MeasQuantityResultsWrap ();
-  MeasQuantityResults_t *GetPointer ();
-  MeasQuantityResults_t GetValue ();
   void AddRsrp (long rsrp);
   void AddRsrq (long rsrq);
   void AddSinr (long sinr);
 
 private:
-  MeasQuantityResults_t *m_measQuantityResults;
+  long m_rsrp  {0};
+  long m_rsrq  {0};
+  long m_sinr  {0};
 };
 
-/**
-* Wrapper for class for ResultsPerCSI_RS_Index_t
-*/
+/** Stub for ResultsPerCSI-RS-Index. */
 class ResultsPerCsiRsIndex : public SimpleRefCount<ResultsPerCsiRsIndex>
 {
 public:
-  ResultsPerCsiRsIndex (long csiRsIndex, MeasQuantityResults_t *csiRsResults);
+  ResultsPerCsiRsIndex (long csiRsIndex, MeasQuantityResultsWrap *csiRsResults);
   ResultsPerCsiRsIndex (long csiRsIndex);
-  ResultsPerCSI_RS_Index_t *GetPointer ();
-  ResultsPerCSI_RS_Index_t GetValue ();
 
 private:
-  ResultsPerCSI_RS_Index_t *m_resultsPerCsiRsIndex;
+  long m_index {0};
 };
 
-/**
-* Wrapper for class for ResultsPerSSB_Index_t
-*/
+/** Stub for ResultsPerSSB-Index. */
 class ResultsPerSSBIndex : public SimpleRefCount<ResultsPerSSBIndex>
 {
 public:
-  ResultsPerSSBIndex (long ssbIndex, MeasQuantityResults_t *ssbResults);
+  ResultsPerSSBIndex (long ssbIndex, MeasQuantityResultsWrap *ssbResults);
   ResultsPerSSBIndex (long ssbIndex);
-  ResultsPerSSB_Index_t *GetPointer ();
-  ResultsPerSSB_Index_t GetValue ();
 
 private:
-  ResultsPerSSB_Index_t *m_resultsPerSSBIndex;
+  long m_index {0};
 };
 
-/**
-* Wrapper for class for MeasResultNR_t
-*/
+/** Stub for MeasResultNR. */
 class MeasResultNr : public SimpleRefCount<MeasResultNr>
 {
 public:
@@ -179,179 +174,141 @@ public:
   MeasResultNr (long physCellId);
   MeasResultNr ();
   ~MeasResultNr ();
-  MeasResultNR_t *GetPointer ();
-  MeasResultNR_t GetValue ();
-  void AddCellResults (ResultCell cell, MeasQuantityResults_t *results);
-  void AddPerSsbIndexResults (ResultsPerSSB_Index_t *resultsSsbIndex);
-  void AddPerCsiRsIndexResults (ResultsPerCSI_RS_Index_t *resultsCsiRsIndex);
+  void AddCellResults (ResultCell cell, MeasQuantityResultsWrap *results);
+  void AddPerSsbIndexResults (ResultsPerSSBIndex *resultsSsbIndex);
+  void AddPerCsiRsIndexResults (ResultsPerCsiRsIndex *resultsCsiRsIndex);
   void AddPhyCellId (long physCellId);
 
 private:
-  MeasResultNR_t *m_measResultNr;
-  bool m_shouldFree;
+  long m_physCellId {0};
 };
 
-/**
-* Wrapper for class for MeasResultEUTRA_t
-*/
+/** Stub for MeasResultEUTRA. */
 class MeasResultEutra : public SimpleRefCount<MeasResultEutra>
 {
 public:
   MeasResultEutra (long eutraPhysCellId, long rsrp, long rsrq, long sinr);
   MeasResultEutra (long eutraPhysCellId);
-  MeasResultEUTRA_t *GetPointer ();
-  MeasResultEUTRA_t GetValue ();
   void AddRsrp (long rsrp);
   void AddRsrq (long rsrq);
   void AddSinr (long sinr);
 
 private:
-  MeasResultEUTRA_t *m_measResultEutra;
+  long m_physCellId {0};
 };
 
-/**
-* Wrapper for class for MeasResultPCell_t
-*/
+/** Stub for MeasResultPCell. */
 class MeasResultPCellWrap : public SimpleRefCount<MeasResultPCellWrap>
 {
 public:
   MeasResultPCellWrap (long eutraPhysCellId, long rsrpResult, long rsrqResult);
   MeasResultPCellWrap (long eutraPhysCellId);
-  MeasResultPCell_t *GetPointer ();
-  MeasResultPCell_t GetValue ();
   void AddRsrpResult (long rsrpResult);
   void AddRsrqResult (long rsrqResult);
 
 private:
-  MeasResultPCell_t *m_measResultPCell;
+  long m_physCellId {0};
 };
 
-/**
-* Wrapper for class for MeasResultServMO_t
-*/
+/** Stub for MeasResultServMO. */
 class MeasResultServMo : public SimpleRefCount<MeasResultServMo>
 {
 public:
-  MeasResultServMo (long servCellId, MeasResultNR_t measResultServingCell,
-                    MeasResultNR_t *measResultBestNeighCell);
-  MeasResultServMo (long servCellId, MeasResultNR_t measResultServingCell);
-  MeasResultServMO_t *GetPointer ();
-  MeasResultServMO_t GetValue ();
+  MeasResultServMo (long servCellId, MeasResultNr *measResultServingCell,
+                    MeasResultNr *measResultBestNeighCell);
+  MeasResultServMo (long servCellId, MeasResultNr *measResultServingCell);
 
 private:
-  MeasResultServMO_t *m_measResultServMo;
+  long m_servCellId {0};
 };
 
-/**
-* Wrapper for class for ServingCellMeasurements_t
-*/
+/** Stub for ServingCellMeasurements. */
 class ServingCellMeasurementsWrap : public SimpleRefCount<ServingCellMeasurementsWrap>
 {
 public:
-  ServingCellMeasurementsWrap (ServingCellMeasurements_PR present);
-  ServingCellMeasurements_t *GetPointer ();
-  ServingCellMeasurements_t GetValue ();
-  void AddMeasResultPCell (MeasResultPCell_t *measResultPCell);
-  void AddMeasResultServMo (MeasResultServMO_t *measResultServMO);
-
-private:
-  ServingCellMeasurements_t *m_servingCellMeasurements;
-  MeasResultServMOList_t *m_nr_measResultServingMOList;
+  ServingCellMeasurementsWrap ();
+  void AddMeasResultPCell (MeasResultPCellWrap *measResultPCell);
+  void AddMeasResultServMo (MeasResultServMo *measResultServMO);
 };
 
 /**
-* Wrapper for class for L3 RRC Measurements
-*/
+ * Wrapper for L3 RRC Measurements — public API preserved for
+ * mmwave-enb-net-device.cc; internal v2 ASN.1 storage replaced with plain C++.
+ */
 class L3RrcMeasurements : public SimpleRefCount<L3RrcMeasurements>
 {
 public:
   int MAX_MEAS_RESULTS_ITEMS = 8; // Maximum 8 per UE (standard)
-  L3RrcMeasurements (RRCEvent_t rrcEvent);
-  L3RrcMeasurements (L3_RRC_Measurements_t *l3RrcMeasurements);
-  ~L3RrcMeasurements ();
-  L3_RRC_Measurements_t *GetPointer ();
-  L3_RRC_Measurements_t GetValue ();
 
-  void AddMeasResultEUTRANeighCells (MeasResultEUTRA_t *measResultItemEUTRA);
-  void AddMeasResultNRNeighCells (MeasResultNR_t *measResultItemNR);
-  void AddServingCellMeasurement (ServingCellMeasurements_t *servingCellMeasurements);
+  L3RrcMeasurements ();
+  ~L3RrcMeasurements ();
+
+  void AddMeasResultEUTRANeighCells (MeasResultEutra *measResultItemEUTRA);
+  void AddMeasResultNRNeighCells (MeasResultNr *measResultItemNR);
+  void AddServingCellMeasurement (ServingCellMeasurementsWrap *servingCellMeasurements);
   void AddNeighbourCellMeasurement (long neighCellId, long sinr);
 
   static Ptr<L3RrcMeasurements> CreateL3RrcUeSpecificSinrServing (long servingCellId,
                                                                   long physCellId, long sinr);
-
   static Ptr<L3RrcMeasurements> CreateL3RrcUeSpecificSinrNeigh ();
 
-  // TODO change definition and return the values (to be used for decoding)
-  static void ExtractMeasurementsFromL3RrcMeas (L3_RRC_Measurements_t *l3RrcMeasurements);
-  
   /**
-   * Returns the input SINR on a 0-127 scale
-   * 
-   * Refer to 3GPP TS 38.133 V17.2.0(2021-06), Table 10.1.16.1-1: SS-SINR and CSI-SINR measurement report mapping
-   * 
-   * @param sinr 
-   * @return double 
+   * Returns the input SINR on a 0-127 scale.
+   * Refer to 3GPP TS 38.133 V17.2.0(2021-06), Table 10.1.16.1-1.
    */
   static double ThreeGppMapSinr (double sinr);
 
 private:
-  void addMeasResultNeighCells (MeasResultNeighCells_PR present);
-  L3_RRC_Measurements_t *m_l3RrcMeasurements;
-  MeasResultListEUTRA_t *m_measResultListEUTRA;
-  MeasResultListNR_t *m_measResultListNR;
-  int m_measItemsCounter;
+  int m_measItemsCounter {0};
 };
 
 /**
-* Wrapper for class for PM_Info_Item_t
-*/
+ * Plain C++ holder for a named KPM measurement item.
+ *
+ * Phase 7 (M6) — ported from v2 PM_Info_Item_t / MeasurementValue_t (both
+ * removed from v3 asn1c) to a plain struct with typed accessors.  The three
+ * public constructors are preserved so all callers compile unchanged.
+ *
+ * ValueType::RRC: the L3-RRC measurement pointer is kept in m_rrcValue so
+ * callers that read it (e.g. CuCp UE path) can still access it; however there
+ * is no v3 MeasurementRecordItem mapping — FillAndEncodeKpmIndicationMessage
+ * emits PR_noValue and logs a warning for RRC items.
+ */
 class MeasurementItem : public SimpleRefCount<MeasurementItem>
 {
 public:
+  enum ValueType { Int = 0, Real = 1, RRC = 2 };
+
   MeasurementItem (std::string name, long value);
   MeasurementItem (std::string name, double value);
   MeasurementItem (std::string name, Ptr<L3RrcMeasurements> value);
   ~MeasurementItem ();
-  PM_Info_Item_t *GetPointer ();
-  PM_Info_Item_t GetValue ();
+
+  /** Return the measurement name (used as MeasurementTypeName in v3). */
+  std::string GetName () const;
+
+  /** Return the stored value type. */
+  ValueType GetValueType () const;
+
+  /** Return integer value; valid only when GetValueType() == Int. */
+  long GetIntValue () const;
+
+  /** Return real value; valid only when GetValueType() == Real. */
+  double GetRealValue () const;
+
+  /** Return RRC measurement pointer; valid only when GetValueType() == RRC. */
+  Ptr<L3RrcMeasurements> GetRrcValue () const;
 
 private:
-  MeasurementItem (std::string name);
-  void CreateMeasurementValue (MeasurementValue_PR measurementValue_PR);
-  // Main struct to be compiled
-  PM_Info_Item_t *m_measurementItem;
-
-  // Accessory structs that we must track to release memory after use
-  MeasurementTypeName_t *m_measName;
-  MeasurementValue_t *m_pmVal;
-  MeasurementType_t *m_pmType;
+  std::string            m_name;
+  ValueType              m_valueType;
+  long                   m_valueInt   {0};
+  double                 m_valueReal  {0.0};
+  Ptr<L3RrcMeasurements> m_rrcValue;
 };
 
-/**
-* Wrapper for class for RANParameter_Item_t 
-*/
-class RANParameterItem : public SimpleRefCount<RANParameterItem>
-{
-public:
-  enum ValueType{ Nothing = 0, Int = 1, OctectString = 2 };
-  RANParameterItem (RANParameter_Item_t *ranParameterItem);
-  ~RANParameterItem ();
-  RANParameter_Item_t *GetPointer ();
-  RANParameter_Item_t GetValue ();
-
-  ValueType m_valueType;
-  long m_valueInt;
-  Ptr<OctetString> m_valueStr;
-
-  static std::vector<RANParameterItem>
-  ExtractRANParametersFromRANParameter (RANParameter_Item_t *ranParameterItem);
-
-private:
-  // Main struct
-  RANParameter_Item_t *m_ranParameterItem;
-  BOOLEAN_t *m_keyFlag;
-};
+/* RANParameterItem removed: RANParameter-* headers absent from v3 asn1c install.
+ * ric-control-message.cc (the only user) is excluded from the build. */
 
 } // namespace ns3
 #endif /* ASN1C_TYPES_H */

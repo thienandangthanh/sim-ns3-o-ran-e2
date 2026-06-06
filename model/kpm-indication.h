@@ -18,8 +18,14 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  * Author: Andrea Lacava <thecave003@gmail.com>
- *		   Tommaso Zugno <tommasozugno@gmail.com>
- *		   Michele Polese <michele.polese@gmail.com>
+ *         Tommaso Zugno <tommasozugno@gmail.com>
+ *         Michele Polese <michele.polese@gmail.com>
+ *
+ * Ported to E2SM-KPM v3.00 (Phase 7 / M6).  v2 container types (PF-Container,
+ * RAN-Container, etc.) removed from ASN.1 path; the struct fields
+ * (m_pmContainerValues, OCuUpContainerValues, etc.) are retained so that
+ * callers (mmwave-enb-net-device.cc, indication-message-helper.cc) compile
+ * unchanged — they no longer drive ASN.1 encoding.
  */
 
 #ifndef KPM_INDICATION_H
@@ -29,170 +35,144 @@
 #include <set>
 
 extern "C" {
+  /* v3.00 KPM headers only — v2 container headers removed */
   #include "E2SM-KPM-RANfunction-Description.h"
   #include "E2SM-KPM-IndicationHeader.h"
   #include "E2SM-KPM-IndicationMessage.h"
-  #include "RAN-Container.h"
-  #include "PF-Container.h"
-  #include "OCUUP-PF-Container.h"
-  #include "OCUCP-PF-Container.h"
-  #include "ODU-PF-Container.h"
-  #include "PF-ContainerListItem.h"
   #include "asn1c-types.h"
 }
 
 namespace ns3 {
 
+  /**
+   * KPM RIC Indication Header — v3.00 IndicationHeader-Format1.
+   *
+   * The GlobalE2nodeType enum and KpmRicIndicationHeaderValues struct are
+   * preserved so callers (BuildRicIndicationHeader in mmwave-enb-net-device.cc)
+   * compile without changes.  The node-type / cell-id fields are no longer used
+   * inside FillAndEncodeKpmRicIndicationHeader because v3 IndicationHeader-
+   * Format1 has no GlobalE2node_ID — only sender strings + 8-byte
+   * colletStartTime.
+   */
   class KpmIndicationHeader : public SimpleRefCount<KpmIndicationHeader>
   {
   public:
+    /** Node type enum — kept for caller ABI; ignored in v3 header encoding. */
     enum GlobalE2nodeType { gNB = 0, eNB = 1, ng_eNB = 2, en_gNB = 3 };
 
+    /** 8 bytes: v3.00 TimeStamp is an OCTET STRING of this exact width. */
     int TIMESTAMP_LIMIT_SIZE = 8;
+
     /**
-    * Holds the values to be used to fill the RIC Indication header 
-    */
+     * Values for the v3 IndicationHeader-Format1.
+     * m_gnbId / m_nrCellId / m_plmId are kept for caller ABI but are not
+     * written into the v3 header (v3 has no GlobalE2node_ID field).
+     * m_timestamp (uint64_t) is encoded as an 8-byte big-endian OCTET STRING
+     * into colletStartTime.
+     */
     struct KpmRicIndicationHeaderValues
     {
-      // E2SM-KPM Indication Header Format 1
-      // KPM Node ID IE
-      std::string m_gnbId; //!< gNB ID bit string 
-      // TODO not supported
-      // uint64_t m_cuUpId; //!< gNB-CU-UP ID, integer [0, 2^36-1], optional
-      
-      // Cell Global ID (NR CGI) IE
-      uint16_t m_nrCellId; //!< NR, bit string
-      
-      // PLMN ID IE
-      std::string m_plmId; //!< PLMN identity, octet string, 3 bytes
-      
-      // Slice ID (S-NSSAI) IE // TODO not supported
-      // std::string m_sst; //!< SNSSAI sST, 1 byte
-      // std::string m_sd; //!< SNSSAI sD, 3 bytes, optional
-      
-      // FiveQI IE // TODO not supported
-      // uint8_t m_fiveqi; //!< fiveQI, integer [0, 255], optional
-      
-      // QCI IE // TODO not supported
-      // long m_qci; //!< QCI, integer [0, 255], optional
-      
-      // TODO this value is placed in a fiels which seems not to be defined 
-      // in the specs. See line 301 in encode_kpm.cpp
-      // the field is called gNB_DU_ID
-      // it should be part of KPM Node ID IE
-      // m_duId
-    
-      // TODO this value is placed in a fiels which seems not to be defined 
-      // in the specs. See line 290 in encode_kpm.cpp, the field is called
-      // gNB_Name
-      // m_cuUpName
-      
-      // CollectionTimeStamp
+      // Retained for ABI (not used in v3 header encoding):
+      std::string m_gnbId;      //!< gNB ID bit string (v2 only — ignored)
+      uint16_t    m_nrCellId;   //!< NR cell ID (v2 only — ignored)
+      std::string m_plmId;      //!< PLMN identity (v2 only — ignored)
+
+      // v3 colletStartTime source — htobe64'd into 8-byte OCTET STRING:
       uint64_t m_timestamp;
     };
-    
-    KpmIndicationHeader (GlobalE2nodeType nodeType,KpmRicIndicationHeaderValues values);
+
+    KpmIndicationHeader (GlobalE2nodeType nodeType, KpmRicIndicationHeaderValues values);
     ~KpmIndicationHeader ();
+
     void* m_buffer;
     size_t m_size;
-    
-  private: 
+
+  private:
     /**
-    * Fills the KPM INDICATION Header descriptor
-    * This function fills the RIC Indication Header with the provided 
-    * values
-    *
-    * \param descriptor object representing the KPM INDICATION Header
-    * \param values struct holding the values to be used to fill the header 
-    */
-    void FillAndEncodeKpmRicIndicationHeader (E2SM_KPM_IndicationHeader_t* descriptor, 
+     * Build and encode v3 IndicationHeader-Format1.
+     * Mirrors kpm_v3::BuildIndicationHeader (kpm-indication-builder.h).
+     */
+    void FillAndEncodeKpmRicIndicationHeader (E2SM_KPM_IndicationHeader_t* descriptor,
                                               KpmRicIndicationHeaderValues values);
-    
+
     void Encode (E2SM_KPM_IndicationHeader_t* descriptor);
 
-    GlobalE2nodeType m_nodeType;
-    };
+    GlobalE2nodeType m_nodeType; //!< kept for ABI; unused in v3
+  };
 
   class MeasurementItemList : public SimpleRefCount<MeasurementItemList>
   {
   private:
-    Ptr<OctetString> m_id; // ID, contains the UE IMSI if used to carry UE-specific measurement items
-    std::vector<Ptr<MeasurementItem>> m_items; //!< list of Measurement Information Items
+    Ptr<OctetString> m_id; //!< UE IMSI if used for UE-specific items; NULL for cell
+    std::vector<Ptr<MeasurementItem>> m_items;
   public:
     MeasurementItemList ();
     MeasurementItemList (std::string ueId);
-     ~MeasurementItemList ();
+    ~MeasurementItemList ();
 
-    // NOTE defined here to avoid undefined references
-    template<class T> 
+    // NOTE: defined here to avoid undefined references
+    template<class T>
     void AddItem (std::string name, T value)
     {
       Ptr<MeasurementItem> item = Create<MeasurementItem> (name, value);
       m_items.push_back (item);
     }
-    
-    std::vector<Ptr<MeasurementItem>> GetItems();
+
+    std::vector<Ptr<MeasurementItem>> GetItems ();
     OCTET_STRING_t GetId ();
   };
 
   /**
-  * Base class to carry PM Container values  
-  */    
-  class PmContainerValues : public SimpleRefCount<PmContainerValues> 
+   * Base class for PM Container value holders.
+   * These classes no longer drive ASN.1 encoding (v2 containers removed);
+   * they are retained so helper callers (FillCuUpValues, etc.) compile.
+   */
+  class PmContainerValues : public SimpleRefCount<PmContainerValues>
   {
   public:
     virtual ~PmContainerValues () = default;
   };
 
-  /**
-  * Contains the values to be inserted in the O-CU-CP Measurement Container  
-  */
+  /** O-CU-CP container values (retained for ABI; not encoded in v3). */
   class OCuCpContainerValues : public PmContainerValues
   {
   public:
-    uint16_t m_numActiveUes; //!< mean number of RRC connections
+    uint16_t m_numActiveUes;
   };
-  
-  /**
-  * Contains the values to be inserted in the O-CU-UP Measurement Container  
-  */
+
+  /** O-CU-UP container values (retained for ABI; not encoded in v3). */
   class OCuUpContainerValues : public PmContainerValues
   {
   public:
-    std::string m_plmId; //!< PLMN identity, octet string, 3 bytes
-    long m_pDCPBytesUL; //!< total PDCP bytes transmitted UL
-    long m_pDCPBytesDL; //!< total PDCP bytes transmitted DL
+    std::string m_plmId;
+    long m_pDCPBytesUL;
+    long m_pDCPBytesDL;
   };
 
-  /**
-  * Contains the values to be inserted in the O-DU EPC Measurement Container  
-  */
+  /** Per-QCI DU EPC container (retained for ABI; not encoded in v3). */
   class EpcDuPmContainer : public SimpleRefCount<EpcDuPmContainer>
   {
   public:
-    long m_qci; //!< QCI value
-    long m_dlPrbUsage; //!< Used number of PRBs in an average of DL for the monitored slice during E2 reporting period
-    long m_ulPrbUsage; //!< Used number of PRBs in an average of UL for the monitored slice during E2 reporting period
+    long m_qci;
+    long m_dlPrbUsage;
+    long m_ulPrbUsage;
     virtual ~EpcDuPmContainer () = default;
   };
 
-  /**
-  * Contains the values to be inserted in the O-DU 5GC Measurement Container  
-  */
+  /** Per-5QI DU 5GC container (retained for ABI; not encoded in v3). */
   class FiveGcDuPmContainer : public SimpleRefCount<FiveGcDuPmContainer>
   {
   public:
-    // Snssai m_sliceId; //!< S-NSSAI
-    long m_fiveQi; //!< 5QI value
-    long m_dlPrbUsage; //!< Used number of PRBs in an average of DL for the monitored slice during E2 reporting period
-    long m_ulPrbUsage; //!< Used number of PRBs in an average of UL for the monitored slice during E2 reporting period
+    long m_fiveQi;
+    long m_dlPrbUsage;
+    long m_ulPrbUsage;
     virtual ~FiveGcDuPmContainer () = default;
   };
 
   class ServedPlmnPerCell : public SimpleRefCount<ServedPlmnPerCell>
   {
   public:
-    std::string m_plmId; //!< PLMN identity, octet string, 3 bytes
+    std::string m_plmId;
     uint16_t m_nrCellId;
     std::set<Ptr<EpcDuPmContainer>> m_perQciReportItems;
   };
@@ -200,57 +180,57 @@ namespace ns3 {
   class CellResourceReport : public SimpleRefCount<CellResourceReport>
   {
   public:
-    std::string m_plmId; //!< PLMN identity, octet string, 3 bytes
+    std::string m_plmId;
     uint16_t m_nrCellId;
     long dlAvailablePrbs;
     long ulAvailablePrbs;
     std::set<Ptr<ServedPlmnPerCell>> m_servedPlmnPerCellItems;
   };
 
-  /**
-  * Contains the values to be inserted in the O-DU Measurement Container  
-  */
+  /** O-DU container values (retained for ABI; not encoded in v3). */
   class ODuContainerValues : public PmContainerValues
   {
   public:
     std::set<Ptr<CellResourceReport>> m_cellResourceReportItems;
   };
 
+  /**
+   * KPM RIC Indication Message — v3.00 IndicationMessage-Format1.
+   *
+   * v2 FillPmContainer/FillOCuUp/FillOCuCp/FillODu methods removed.
+   * KpmIndicationMessageValues struct kept unchanged so all callers compile;
+   * m_pmContainerValues is populated by helpers but no longer drives ASN.1.
+   *
+   * Encoding path: all named MeasurementItems from m_cellMeasurementItems
+   * (then m_ueIndications) are emitted as a flat v3 Format1 with one
+   * MeasurementDataItem carrying an N-element MeasurementRecord, parallel
+   * to an N-element MeasurementInfoList.  Order: cell items first (in
+   * AddItem order), then UE items flattened across all UE indications.
+   */
   class KpmIndicationMessage : public SimpleRefCount<KpmIndicationMessage>
   {
   public:
-    
-    /**
-    * Holds the values to be used to fill the RIC Indication Message 
-    */
+
     struct KpmIndicationMessageValues
     {
-      std::string m_cellObjectId; //!< Cell Object ID
-      Ptr<PmContainerValues> m_pmContainerValues; //!< struct containing values to be inserted in the PM Container
-      Ptr<MeasurementItemList> m_cellMeasurementItems; //!< list of cell-specific Measurement Information Items
-      std::set<Ptr<MeasurementItemList>> m_ueIndications; //!< list of Measurement Information Items
+      std::string m_cellObjectId;                         //!< Cell Object ID (kept for ABI)
+      Ptr<PmContainerValues> m_pmContainerValues;         //!< v2 container holder (ABI; unused in v3 ASN.1)
+      Ptr<MeasurementItemList> m_cellMeasurementItems;    //!< cell-level named items → v3 record
+      std::set<Ptr<MeasurementItemList>> m_ueIndications; //!< UE-level named items → appended to record
     };
 
     KpmIndicationMessage (KpmIndicationMessageValues values);
     ~KpmIndicationMessage ();
-    
+
     void* m_buffer;
     size_t m_size;
-    
+
   private:
-    static void CheckConstraints (KpmIndicationMessageValues values);
-    void FillPmContainer (PF_Container_t *ranContainer, 
-                          Ptr<PmContainerValues> values);
-    void FillOCuUpContainer (PF_Container_t *ranContainer, 
-                            Ptr<OCuUpContainerValues> values);
-    void FillOCuCpContainer (PF_Container_t *ranContainer, 
-                             Ptr<OCuCpContainerValues> values);
-    void FillODuContainer (PF_Container_t *ranContainer, 
-                           Ptr<ODuContainerValues> values);
     void FillAndEncodeKpmIndicationMessage (E2SM_KPM_IndicationMessage_t *descriptor,
                                             KpmIndicationMessageValues values);
     void Encode (E2SM_KPM_IndicationMessage_t *descriptor);
   };
-}
+
+} // namespace ns3
 
 #endif /* KPM_INDICATION_H */

@@ -32,10 +32,9 @@ extern "C" {
   #include "E2SM-KPM-RANfunction-Description.h"
   #include "E2SM-KPM-IndicationHeader.h"
   #include "E2SM-KPM-IndicationMessage.h"
-  #include "RAN-Container.h"
-  #include "PF-Container.h"
-  #include "OCUUP-PF-Container.h"
-  #include "PF-ContainerListItem.h"
+  /* RAN-Container.h, PF-Container.h, OCUUP-PF-Container.h, PF-ContainerListItem.h
+   * removed: v2 PM-container headers absent from v3 asn1c install and unused
+   * in the v3 KPM RANfunction description implementation. */
   #include "asn1c-types.h"
 }
 

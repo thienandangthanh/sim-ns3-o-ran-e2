@@ -18,8 +18,20 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  * Author: Andrea Lacava <thecave003@gmail.com>
- *		   Tommaso Zugno <tommasozugno@gmail.com>
- *		   Michele Polese <michele.polese@gmail.com>
+ *         Tommaso Zugno <tommasozugno@gmail.com>
+ *         Michele Polese <michele.polese@gmail.com>
+ *
+ * Phase 7 (M6): ported from E2SM-KPM v2 to v3.00 asn1c.
+ *
+ * Stage B — IndicationHeader: v2 GlobalE2node_ID / BitString cell-id logic
+ *   removed; v3 Format1 uses sender strings + 8-byte colletStartTime only.
+ *   Mirrors kpm_v3::BuildIndicationHeader (kpm-indication-builder.h).
+ *
+ * Stage C — IndicationMessage: v2 PM-container (FillPmContainer,
+ *   FillOCuUp/CuCp/ODu) removed.  Replaced by a flat v3 Format1 builder
+ *   that gathers all named MeasurementItems (cell first, then UE) into a
+ *   single MeasurementRecord + parallel MeasurementInfoList.
+ *   Mirrors kpm_v3::BuildDummyIndicationMessage generalised to N items.
  */
 
 #include <ns3/kpm-indication.h>
@@ -27,40 +39,53 @@
 #include <ns3/log.h>
 
 extern "C" {
+/* v3.00 KPM ASN.1 headers */
 #include "E2SM-KPM-IndicationHeader-Format1.h"
 #include "E2SM-KPM-IndicationMessage-Format1.h"
-#include "GlobalE2node-ID.h"
-#include "GlobalE2node-gNB-ID.h"
-#include "GlobalE2node-eNB-ID.h"
-#include "GlobalE2node-ng-eNB-ID.h"
-#include "GlobalE2node-en-gNB-ID.h"
-#include "NRCGI.h"
-#include "PM-Containers-Item.h"
-#include "RIC-EventTriggerStyle-Item.h"
-#include "RIC-ReportStyle-Item.h"
 #include "TimeStamp.h"
-#include "CUUPMeasurement-Container.h"
-#include "PlmnID-Item.h"
-#include "EPC-CUUP-PM-Format.h"
-#include "PerQCIReportListItemFormat.h"
-#include "PerUE-PM-Item.h"
-#include "PM-Info-Item.h"
+#include "MeasurementData.h"
+#include "MeasurementDataItem.h"
+#include "MeasurementRecord.h"
+#include "MeasurementRecordItem.h"
 #include "MeasurementInfoList.h"
-#include "CellObjectID.h"
-#include "CellResourceReportListItem.h"
-#include "ServedPlmnPerCellListItem.h"
-#include "EPC-DU-PM-Container.h"
-#include "PerQCIReportListItem.h"
+#include "MeasurementInfoItem.h"
+#include "MeasurementType.h"
+#include "MeasurementTypeName.h"
+#include "LabelInfoList.h"
+#include "LabelInfoItem.h"
+#include "MeasurementLabel.h"
+#include "GranularityPeriod.h"
+#include "S-NSSAI.h"
+#include "SD.h"
+#include "PLMNIdentity.h"
 }
 
 namespace ns3 {
 
 NS_LOG_COMPONENT_DEFINE ("KpmIndication");
 
-KpmIndicationHeader::KpmIndicationHeader (GlobalE2nodeType nodeType,KpmRicIndicationHeaderValues values)
+/* =========================================================================
+ * KpmIndicationHeader — Stage B
+ * =========================================================================
+ *
+ * v3.00 IndicationHeader-Format1 shape:
+ *   colletStartTime   OCTET STRING (8 bytes) — mandatory
+ *   fileFormatversion PrintableString        — OPTIONAL (omitted)
+ *   senderName        PrintableString        — OPTIONAL (filled)
+ *   senderType        PrintableString        — OPTIONAL (filled)
+ *   vendorName        PrintableString        — OPTIONAL (filled)
+ *
+ * No GlobalE2node_ID, no collectionStartTime (those are v2 field names).
+ * Mirrors kpm_v3::BuildIndicationHeader (examples/kpm-indication-builder.h).
+ */
+
+KpmIndicationHeader::KpmIndicationHeader (GlobalE2nodeType nodeType,
+                                          KpmRicIndicationHeaderValues values)
 {
+  /* m_nodeType kept for ABI but unused in v3 header encoding */
   m_nodeType = nodeType;
-  E2SM_KPM_IndicationHeader_t *descriptor = new E2SM_KPM_IndicationHeader_t;
+  E2SM_KPM_IndicationHeader_t *descriptor = new E2SM_KPM_IndicationHeader_t ();
+  memset (descriptor, 0, sizeof (E2SM_KPM_IndicationHeader_t));
   FillAndEncodeKpmRicIndicationHeader (descriptor, values);
   delete descriptor;
 }
@@ -75,16 +100,16 @@ KpmIndicationHeader::~KpmIndicationHeader ()
 void
 KpmIndicationHeader::Encode (E2SM_KPM_IndicationHeader_t *descriptor)
 {
-  asn_codec_ctx_t *opt_cod = 0; // disable stack bounds checking
+  asn_codec_ctx_t *opt_cod = 0; /* disable stack bounds checking */
   asn_encode_to_new_buffer_result_s encodedHeader = asn_encode_to_new_buffer (
       opt_cod, ATS_ALIGNED_BASIC_PER, &asn_DEF_E2SM_KPM_IndicationHeader, descriptor);
 
   if (encodedHeader.result.encoded < 0)
     {
-      NS_FATAL_ERROR ("Error during the encoding of the RIC Indication Header, errno: "
+      NS_FATAL_ERROR ("Error encoding RIC Indication Header, errno: "
                       << strerror (errno) << ", failed_type "
-                      << encodedHeader.result.failed_type->name << ", structure_ptr "
-                      << encodedHeader.result.structure_ptr);
+                      << encodedHeader.result.failed_type->name
+                      << ", structure_ptr " << encodedHeader.result.structure_ptr);
     }
 
   m_buffer = encodedHeader.buffer;
@@ -92,120 +117,135 @@ KpmIndicationHeader::Encode (E2SM_KPM_IndicationHeader_t *descriptor)
 }
 
 void
-KpmIndicationHeader::FillAndEncodeKpmRicIndicationHeader (E2SM_KPM_IndicationHeader_t *descriptor,
-                                                          KpmRicIndicationHeaderValues values)
+KpmIndicationHeader::FillAndEncodeKpmRicIndicationHeader (
+    E2SM_KPM_IndicationHeader_t *descriptor,
+    KpmRicIndicationHeaderValues values)
 {
+  /* Allocate the v3 Format1 struct (all optional pointer fields start NULL). */
+  E2SM_KPM_IndicationHeader_Format1_t *fmt =
+      (E2SM_KPM_IndicationHeader_Format1_t *) calloc (
+          1, sizeof (E2SM_KPM_IndicationHeader_Format1_t));
 
-  E2SM_KPM_IndicationHeader_Format1_t *ind_header = (E2SM_KPM_IndicationHeader_Format1_t *) calloc (
-      1, sizeof (E2SM_KPM_IndicationHeader_Format1_t));
+  /* ---- senderName (PrintableString, OPTIONAL) ---- */
+  /* Mirrors: fmt->senderName buf/size fill in BuildIndicationHeader(). */
+  const char *sender = "ORANSim";
+  fmt->senderName = (PrintableString_t *) calloc (1, sizeof (PrintableString_t));
+  fmt->senderName->buf = (uint8_t *) calloc (1, strlen (sender));
+  memcpy (fmt->senderName->buf, sender, strlen (sender));
+  fmt->senderName->size = strlen (sender);
 
-  Ptr<OctetString> plmnid = Create<OctetString> (values.m_plmId, 3);
-  Ptr<BitString> cellId_bstring;
+  /* ---- senderType (PrintableString, OPTIONAL) ---- */
+  const char *stype = "simulator";
+  fmt->senderType = (PrintableString_t *) calloc (1, sizeof (PrintableString_t));
+  fmt->senderType->buf = (uint8_t *) calloc (1, strlen (stype));
+  memcpy (fmt->senderType->buf, stype, strlen (stype));
+  fmt->senderType->size = strlen (stype);
 
-  GlobalE2node_ID *globalE2nodeIdBuf = (GlobalE2node_ID *) calloc (1, sizeof (GlobalE2node_ID));
-  ind_header->id_GlobalE2node_ID = *globalE2nodeIdBuf;
+  /* ---- vendorName (PrintableString, OPTIONAL) ---- */
+  const char *vendor = "ORAN-SC";
+  fmt->vendorName = (PrintableString_t *) calloc (1, sizeof (PrintableString_t));
+  fmt->vendorName->buf = (uint8_t *) calloc (1, strlen (vendor));
+  memcpy (fmt->vendorName->buf, vendor, strlen (vendor));
+  fmt->vendorName->size = strlen (vendor);
 
-  switch (m_nodeType)
-    {
-      case gNB: {
-        static int sizeGnb = 4; // 3GPP Specs
-        
-        cellId_bstring = Create<BitString> (values.m_gnbId, sizeGnb);
+  /* ---- colletStartTime (TimeStamp_t = OCTET STRING, 8 bytes) ----
+   *
+   * v3.00 TimeStamp is an 8-byte OCTET STRING.  We encode the simulation
+   * m_timestamp (uint64_t) big-endian into those 8 bytes — same width as
+   * the OSC reference "20200613" (8 ASCII bytes).  The 8-byte width is what
+   * makes the wire shape v3-compatible; the calendar value is not decoded
+   * by the RIC for correctness checks.
+   */
+  NS_LOG_DEBUG ("Timestamp received: " << values.m_timestamp);
+  uint64_t bigEndianTimestamp = htobe64 (values.m_timestamp);
+  NS_LOG_DEBUG ("Timestamp big-endian: " << bigEndianTimestamp);
 
-        ind_header->id_GlobalE2node_ID.present = GlobalE2node_ID_PR_gNB;
-        GlobalE2node_gNB_ID_t *globalE2node_gNB_ID =
-            (GlobalE2node_gNB_ID_t *) calloc (1, sizeof (GlobalE2node_gNB_ID_t));
-        globalE2node_gNB_ID->global_gNB_ID.plmn_id = plmnid->GetValue ();
-        globalE2node_gNB_ID->global_gNB_ID.gnb_id.present = GNB_ID_Choice_PR_gnb_ID;
-        globalE2node_gNB_ID->global_gNB_ID.gnb_id.choice.gnb_ID = cellId_bstring->GetValue ();
-        ind_header->id_GlobalE2node_ID.choice.gNB = globalE2node_gNB_ID;
-      }
-      break;
+  fmt->colletStartTime.buf =
+      (uint8_t *) calloc (1, (size_t) TIMESTAMP_LIMIT_SIZE);
+  fmt->colletStartTime.size = (size_t) TIMESTAMP_LIMIT_SIZE;
+  memcpy (fmt->colletStartTime.buf, &bigEndianTimestamp,
+          (size_t) TIMESTAMP_LIMIT_SIZE);
 
-      case eNB: {
-        static int sizeEnb =
-            3; // 3GPP TS 36.413 version 14.8.0 Release 14, Section 9.2.1.37 Global eNB ID
-        static int unsedSizeEnb = 4;
-        
-        cellId_bstring = Create<BitString> (values.m_gnbId, sizeEnb, unsedSizeEnb);
-        
-        ind_header->id_GlobalE2node_ID.present = GlobalE2node_ID_PR_eNB;
-        GlobalE2node_eNB_ID_t *globalE2node_eNB_ID =
-            (GlobalE2node_eNB_ID_t *) calloc (1, sizeof (GlobalE2node_eNB_ID_t));
-        globalE2node_eNB_ID->global_eNB_ID.pLMN_Identity = plmnid->GetValue ();
-        globalE2node_eNB_ID->global_eNB_ID.eNB_ID.present = ENB_ID_PR_macro_eNB_ID;
-        globalE2node_eNB_ID->global_eNB_ID.eNB_ID.choice.macro_eNB_ID = cellId_bstring->GetValue ();
-        ind_header->id_GlobalE2node_ID.choice.eNB = globalE2node_eNB_ID;
-      }
-      break;
+  /* ---- Wire the Format1 into the outer wrapper (v3 indicationHeader_formats) ---- */
+  descriptor->indicationHeader_formats.present =
+      E2SM_KPM_IndicationHeader__indicationHeader_formats_PR_indicationHeader_Format1;
+  descriptor->indicationHeader_formats.choice.indicationHeader_Format1 = fmt;
 
-      case ng_eNB: {
-        static int sizeEnb =
-            3; // 3GPP TS 36.413 version 14.8.0 Release 14, Section 9.2.1.37 Global eNB ID
-        static int unsedSizeEnb = 4;
+  NS_LOG_INFO (xer_fprint (stderr, &asn_DEF_E2SM_KPM_IndicationHeader_Format1, fmt));
 
-        cellId_bstring = Create<BitString> (values.m_gnbId, sizeEnb, unsedSizeEnb);
+  Encode (descriptor);
 
-        ind_header->id_GlobalE2node_ID.present = GlobalE2node_ID_PR_ng_eNB;
-        GlobalE2node_ng_eNB_ID_t *globalE2node_ng_eNB_ID =
-            (GlobalE2node_ng_eNB_ID_t *) calloc (1, sizeof (GlobalE2node_ng_eNB_ID_t));
-
-        globalE2node_ng_eNB_ID->global_ng_eNB_ID.plmn_id = plmnid->GetValue ();
-        globalE2node_ng_eNB_ID->global_ng_eNB_ID.enb_id.present = ENB_ID_Choice_PR_enb_ID_macro;
-        globalE2node_ng_eNB_ID->global_ng_eNB_ID.enb_id.choice.enb_ID_macro =
-            cellId_bstring->GetValue ();
-        ind_header->id_GlobalE2node_ID.choice.ng_eNB = globalE2node_ng_eNB_ID;
-      }
-      break;
-
-      case en_gNB: {
-        static int sizeGnb = 4; // 3GPP Specs
-        cellId_bstring = Create<BitString> (values.m_gnbId, sizeGnb);
-
-        ind_header->id_GlobalE2node_ID.present = GlobalE2node_ID_PR_en_gNB;
-        GlobalE2node_en_gNB_ID_t *globalE2node_en_gNB_ID =
-            (GlobalE2node_en_gNB_ID_t *) calloc (1, sizeof (GlobalE2node_en_gNB_ID_t));
-        globalE2node_en_gNB_ID->global_gNB_ID.pLMN_Identity = plmnid->GetValue ();
-        globalE2node_en_gNB_ID->global_gNB_ID.gNB_ID.present = ENGNB_ID_PR_gNB_ID;
-        globalE2node_en_gNB_ID->global_gNB_ID.gNB_ID.choice.gNB_ID = cellId_bstring->GetValue ();
-        ind_header->id_GlobalE2node_ID.choice.en_gNB = globalE2node_en_gNB_ID;
-      }
-      break;
-
-    default:
-      NS_FATAL_ERROR (
-          "Unrecognized node type for KpmRicIndicationHeader, value passed: " << m_nodeType);
-      break;
-    }
-
-    NS_LOG_DEBUG ("Timestamp received: " << values.m_timestamp);
-    long bigEndianTimestamp = htobe64 (values.m_timestamp);
-    NS_LOG_DEBUG ("Timestamp inverted: " << bigEndianTimestamp);
-    
-    Ptr<OctetString> ts = Create<OctetString> ((void *) &bigEndianTimestamp, TIMESTAMP_LIMIT_SIZE);
-    //NS_LOG_INFO (xer_fprint (stderr, &asn_DEF_OCTET_STRING, ts->GetPointer() ));
-    
-    // Ptr<OctetString> ts2 = Create<OctetString> ((void *) &values.m_timestamp, TIMESTAMP_LIMIT_SIZE);
-    // NS_LOG_INFO (xer_fprint (stderr, &asn_DEF_OCTET_STRING, ts2->GetPointer()));
-
-    ind_header->collectionStartTime = ts->GetValue ();
-
-
-    NS_LOG_INFO (xer_fprint (stderr, &asn_DEF_E2SM_KPM_IndicationHeader_Format1, ind_header));
-
-    descriptor->present = E2SM_KPM_IndicationHeader_PR_indicationHeader_Format1;
-    descriptor->choice.indicationHeader_Format1 = ind_header;
-
-    Encode (descriptor);
-    ASN_STRUCT_FREE (asn_DEF_E2SM_KPM_IndicationHeader_Format1, ind_header);
-    free (globalE2nodeIdBuf);
-    // TraceMessage (&asn_DEF_E2SM_KPM_IndicationHeader, header, "RIC Indication Header");
+  /* Free the calloc'd Format1 sub-tree (senderName/Type/vendorName + their
+   * buffers + colletStartTime.buf + fmt itself).  The ctor's `delete descriptor`
+   * only releases the outer struct shell — it does NOT recurse into the asn1c
+   * sub-tree — so the v2 code freed it explicitly with ASN_STRUCT_FREE; the v3
+   * port must do the same or it leaks one Format1 sub-tree per indication
+   * (unbounded on the periodic live report loop). Null the choice pointer so the
+   * subsequent shell delete can't observe a dangling pointer. */
+  ASN_STRUCT_FREE (asn_DEF_E2SM_KPM_IndicationHeader_Format1, fmt);
+  descriptor->indicationHeader_formats.choice.indicationHeader_Format1 = nullptr;
 }
+
+/* =========================================================================
+ * MeasurementItemList
+ * =========================================================================*/
+
+MeasurementItemList::MeasurementItemList ()
+{
+  m_id = nullptr;
+}
+
+MeasurementItemList::MeasurementItemList (std::string id)
+{
+  m_id = Create<OctetString> (id, id.length ());
+}
+
+MeasurementItemList::~MeasurementItemList ()
+{
+}
+
+std::vector<Ptr<MeasurementItem>>
+MeasurementItemList::GetItems ()
+{
+  return m_items;
+}
+
+OCTET_STRING_t
+MeasurementItemList::GetId ()
+{
+  NS_ABORT_IF (m_id == nullptr);
+  return m_id->GetValue ();
+}
+
+/* =========================================================================
+ * KpmIndicationMessage — Stage C2
+ * =========================================================================
+ *
+ * v3.00 IndicationMessage-Format1 shape:
+ *   measData      MeasurementData     — mandatory (SEQUENCE OF MeasurementDataItem)
+ *   measInfoList  MeasurementInfoList — OPTIONAL (SEQUENCE OF MeasurementInfoItem)
+ *   granulPeriod  GranularityPeriod   — OPTIONAL
+ *
+ * Encoding strategy (N items total):
+ *   - Collect ordered (name, value) pairs: cell items first (in AddItem order
+ *     from m_cellMeasurementItems), then UE items appended per UE in set
+ *     iteration order.  Order is deterministic within a single report
+ *     (set iteration order is consistent across record and infoList).
+ *   - Build ONE MeasurementDataItem with an N-element MeasurementRecord.
+ *   - Build ONE MeasurementInfoList with N MeasurementInfoItems, each with
+ *     measType.present = MeasurementType_PR_measName, and one LabelInfoItem
+ *     carrying a static PLMN="747"/SST="1"/SD="100" label (same static label
+ *     as the reference; per-item PLMN derivation is a Phase7-live TODO — see
+ *     comment below).
+ *   - record[i] ↔ infoList[i] (parallel order guaranteed by single loop).
+ *
+ * Mirrors kpm_v3::BuildDummyIndicationMessage, generalised to N items.
+ */
 
 KpmIndicationMessage::KpmIndicationMessage (KpmIndicationMessageValues values)
 {
   E2SM_KPM_IndicationMessage_t *descriptor = new E2SM_KPM_IndicationMessage_t ();
-  CheckConstraints (values);
+  memset (descriptor, 0, sizeof (E2SM_KPM_IndicationMessage_t));
   FillAndEncodeKpmIndicationMessage (descriptor, values);
   delete descriptor;
 }
@@ -217,290 +257,254 @@ KpmIndicationMessage::~KpmIndicationMessage ()
 }
 
 void
-KpmIndicationMessage::CheckConstraints (KpmIndicationMessageValues values)
-{
-  // TODO remove?
-  // if (values.m_crnti.length () != 2)
-  //   {
-  //     NS_FATAL_ERROR ("C-RNTI should have length 2");
-  //   }
-  // if (values.m_plmId.length () != 3)
-  //   {
-  //     NS_FATAL_ERROR ("PLMID should have length 3");
-  //   }
-  // if (values.m_nrCellId.length () != 5)
-  //   {
-  //     NS_FATAL_ERROR ("NR Cell ID should have length 5");
-  //   }
-  // TODO add other constraints
-}
-
-void
 KpmIndicationMessage::Encode (E2SM_KPM_IndicationMessage_t *descriptor)
 {
-  asn_codec_ctx_t *opt_cod = 0; // disable stack bounds checking
+  asn_codec_ctx_t *opt_cod = 0;
   asn_encode_to_new_buffer_result_s encodedMsg = asn_encode_to_new_buffer (
       opt_cod, ATS_ALIGNED_BASIC_PER, &asn_DEF_E2SM_KPM_IndicationMessage, descriptor);
 
   if (encodedMsg.result.encoded < 0)
     {
-      NS_FATAL_ERROR ("Error during the encoding of the RIC Indication Message, errno: "
-                      << strerror (errno) << ", failed_type " << encodedMsg.result.failed_type->name
-                      << ", structure_ptr " << encodedMsg.result.structure_ptr);
+      /* NS_LOG_ERROR rather than NS_FATAL_ERROR so one bad report does not
+       * kill the node.  m_buffer/m_size remain 0 — callers check m_size. */
+      NS_LOG_ERROR ("Error encoding RIC Indication Message, errno: "
+                    << strerror (errno) << ", failed_type "
+                    << encodedMsg.result.failed_type->name
+                    << ", structure_ptr " << encodedMsg.result.structure_ptr);
+      return;
     }
 
   m_buffer = encodedMsg.buffer;
   m_size = encodedMsg.result.encoded;
 }
 
-void
-KpmIndicationMessage::FillPmContainer (PF_Container_t *ranContainer, Ptr<PmContainerValues> values)
+/* Helper: build a single MeasurementInfoItem with measName from a C++ string
+ * and a static PLMN+S-NSSAI label.
+ *
+ * Label choice rationale: v3 kpimon-go expects at least one LabelInfoItem per
+ * MeasurementInfoItem.  We use the same static "747"/"1"/"100" values as the
+ * Phase-6 reference (kpm_v3::BuildDummyIndicationMessage).  Deriving PLMN from
+ * values.m_pmContainerValues->m_plmId requires knowing the container type and
+ * adds complexity not needed for M6 offline correctness.
+ * TODO(Phase7-live): derive PLMN from actual sim cell PLMN for live kpimon
+ * parity; verify SD encoding (ASCII bytes vs BCD) against kpimon decoder.
+ */
+static MeasurementInfoItem_t *
+BuildMeasInfoItem (const std::string &name)
 {
-  Ptr<OCuUpContainerValues> cuUpVal = DynamicCast<OCuUpContainerValues> (values);
-  Ptr<OCuCpContainerValues> cuCpVal = DynamicCast<OCuCpContainerValues> (values);
-  Ptr<ODuContainerValues> duVal = DynamicCast<ODuContainerValues> (values);
+  /* ---- Static label strings (mirrors BuildDummyIndicationMessage) ---- */
+  static const char *PLMN_ID = "747";
+  static const char *SST     = "1";
+  static const char *SD_VAL  = "100";
 
-  if (cuUpVal)
-    {
-      FillOCuUpContainer (ranContainer, cuUpVal);
-    }
-  else if (cuCpVal)
-    {
-      FillOCuCpContainer (ranContainer, cuCpVal);
-    }
-  else if (duVal)
-   {
-     FillODuContainer (ranContainer, duVal);
-   }
-  else
-    {
-      NS_FATAL_ERROR ("Unknown PM Container type");
-    }
+  /* S-NSSAI */
+  S_NSSAI_t *snssai = (S_NSSAI_t *) calloc (1, sizeof (S_NSSAI_t));
+  snssai->sST.buf  = (uint8_t *) calloc (1, strlen (SST));
+  snssai->sST.size = strlen (SST);
+  memcpy (snssai->sST.buf, SST, strlen (SST));
+  snssai->sD = (SD_t *) calloc (1, sizeof (SD_t));
+  snssai->sD->buf  = (uint8_t *) calloc (1, strlen (SD_VAL));
+  snssai->sD->size = strlen (SD_VAL);
+  memcpy (snssai->sD->buf, SD_VAL, strlen (SD_VAL));
+
+  /* PLMNIdentity */
+  PLMNIdentity_t *plmn = (PLMNIdentity_t *) calloc (1, sizeof (PLMNIdentity_t));
+  plmn->buf  = (uint8_t *) calloc (1, strlen (PLMN_ID));
+  plmn->size = strlen (PLMN_ID);
+  memcpy (plmn->buf, PLMN_ID, strlen (PLMN_ID));
+
+  /* MeasurementLabel */
+  MeasurementLabel_t *lbl = (MeasurementLabel_t *) calloc (1, sizeof (MeasurementLabel_t));
+  lbl->plmnID  = plmn;
+  lbl->sliceID = snssai;
+
+  /* LabelInfoItem — shallow-copy the label value, then free the wrapper */
+  LabelInfoItem_t *lblItem = (LabelInfoItem_t *) calloc (1, sizeof (LabelInfoItem_t));
+  lblItem->measLabel = *lbl;
+  free (lbl); /* only the wrapper struct; pointer members now owned by lblItem */
+
+  /* LabelInfoList — shallow-copy into infoItem, free wrapper */
+  LabelInfoList_t *lblList = (LabelInfoList_t *) calloc (1, sizeof (LabelInfoList_t));
+  ASN_SEQUENCE_ADD (&lblList->list, lblItem);
+
+  /* MeasurementInfoItem */
+  MeasurementInfoItem_t *infoItem =
+      (MeasurementInfoItem_t *) calloc (1, sizeof (MeasurementInfoItem_t));
+  infoItem->labelInfoList = *lblList;
+  free (lblList); /* shallow-copy done; free wrapper only */
+
+  /* measType: measName (PrintableString = MeasurementTypeName_t).
+   * MeasurementTypeName_t is typedef'd as PrintableString_t in v3 asn1c. */
+  infoItem->measType.present = MeasurementType_PR_measName;
+  infoItem->measType.choice.measName.buf =
+      (uint8_t *) calloc (1, name.size ());
+  memcpy (infoItem->measType.choice.measName.buf, name.c_str (), name.size ());
+  infoItem->measType.choice.measName.size = name.size ();
+
+  return infoItem;
 }
 
 void
-KpmIndicationMessage::FillOCuUpContainer (PF_Container_t *ranContainer,
-                                          Ptr<OCuUpContainerValues> values)
+KpmIndicationMessage::FillAndEncodeKpmIndicationMessage (
+    E2SM_KPM_IndicationMessage_t *descriptor,
+    KpmIndicationMessageValues values)
 {
-  OCUUP_PF_Container_t* ocuup = (OCUUP_PF_Container_t*) calloc (1, sizeof (OCUUP_PF_Container_t));
-  PF_ContainerListItem_t* pcli = (PF_ContainerListItem_t*) calloc (1, sizeof (PF_ContainerListItem_t));
-  pcli->interface_type = NI_Type_x2_u;
-  
-  CUUPMeasurement_Container_t* cuuppmc = (CUUPMeasurement_Container_t*) calloc (1, sizeof (CUUPMeasurement_Container_t)); 
-  PlmnID_Item_t* plmnItem = (PlmnID_Item_t*) calloc (1, sizeof (PlmnID_Item_t)); 
-  Ptr<OctetString> plmnidstr = Create<OctetString> (values->m_plmId, 3);
-  plmnItem->pLMN_Identity = plmnidstr->GetValue ();
-  
-  EPC_CUUP_PM_Format_t* cuuppmf = (EPC_CUUP_PM_Format_t*) calloc (1, sizeof (EPC_CUUP_PM_Format_t));
-  plmnItem->cu_UP_PM_EPC = cuuppmf;
-  PerQCIReportListItemFormat_t* pqrli = (PerQCIReportListItemFormat_t*) calloc (1, sizeof (PerQCIReportListItemFormat_t));
-  pqrli->drbqci = 0;
+  /* Initialise outputs up-front: the soft constraint-fail path below returns
+   * without encoding, and ~KpmIndicationMessage does free(m_buffer) — leaving
+   * these indeterminate would be UB on that path. */
+  m_buffer = nullptr;
+  m_size = 0;
 
-  INTEGER_t *pDCPBytesDL = (INTEGER_t *) calloc (1, sizeof (INTEGER_t));
-  INTEGER_t *pDCPBytesUL = (INTEGER_t *) calloc (1, sizeof (INTEGER_t));
+  /* ---- Collect ordered (name, MeasurementItem) pairs ---- */
+  /* Cell items first, then UE items (deterministic per-UE via set iteration). */
+  std::vector<Ptr<MeasurementItem>> orderedItems;
 
-  asn_long2INTEGER (pDCPBytesDL, values->m_pDCPBytesDL);
-  asn_long2INTEGER (pDCPBytesUL, values->m_pDCPBytesUL);
-
-  pqrli->pDCPBytesDL = pDCPBytesDL;
-  pqrli->pDCPBytesUL = pDCPBytesUL;
-
-  ASN_SEQUENCE_ADD (&cuuppmf->perQCIReportList_cuup.list, pqrli);
-
-  ASN_SEQUENCE_ADD (&cuuppmc->plmnList.list, plmnItem);
-
-  pcli->o_CU_UP_PM_Container = *cuuppmc;
-  ASN_SEQUENCE_ADD (&ocuup->pf_ContainerList, pcli);
-  ranContainer->choice.oCU_UP = ocuup;
-  ranContainer->present = PF_Container_PR_oCU_UP;
-
-  free (cuuppmc);
-}
-
-void
-KpmIndicationMessage::FillOCuCpContainer (PF_Container_t *ranContainer,
-                                          Ptr<OCuCpContainerValues> values)
-{
-  OCUCP_PF_Container_t *ocucp = (OCUCP_PF_Container_t *) calloc (1, sizeof(OCUCP_PF_Container_t));
-  long *numActiveUes = (long *) calloc (1, sizeof (long));
-  *numActiveUes = long(values->m_numActiveUes);
-  ocucp->cu_CP_Resource_Status.numberOfActive_UEs = numActiveUes;
-  ranContainer->choice.oCU_CP = ocucp;
-  ranContainer->present = PF_Container_PR_oCU_CP;
-}
-
-void
-KpmIndicationMessage::FillODuContainer (PF_Container_t *ranContainer,
-                                        Ptr<ODuContainerValues> values)
-{
-  ODU_PF_Container_t *odu = (ODU_PF_Container_t *) calloc (1, sizeof (ODU_PF_Container_t));
-  
-  for (auto cellReport : values->m_cellResourceReportItems)
-    {
-      NS_LOG_LOGIC ("O-DU: Add Cell Resource Report Item");
-      CellResourceReportListItem_t *crrli =
-          (CellResourceReportListItem_t *) calloc (1, sizeof (CellResourceReportListItem_t));
-
-      Ptr<OctetString> plmnid = Create<OctetString> (cellReport->m_plmId, 3);
-      Ptr<NrCellId> nrcellid = Create<NrCellId> (cellReport->m_nrCellId);
-      crrli->nRCGI.pLMN_Identity = plmnid->GetValue ();
-      crrli->nRCGI.nRCellIdentity = nrcellid->GetValue ();
-
-      long *dlAvailablePrbs = (long *) calloc (1, sizeof (long));
-      *dlAvailablePrbs = cellReport->dlAvailablePrbs;
-      crrli->dl_TotalofAvailablePRBs = dlAvailablePrbs;
-      
-      long *ulAvailablePrbs = (long *) calloc (1, sizeof (long));
-      *ulAvailablePrbs = cellReport->ulAvailablePrbs;
-      crrli->ul_TotalofAvailablePRBs = ulAvailablePrbs;
-      ASN_SEQUENCE_ADD (&odu->cellResourceReportList.list, crrli);
-      
-      for (auto servedPlmnCell : cellReport->m_servedPlmnPerCellItems)
-        {
-          NS_LOG_LOGIC ("O-DU: Add Served Plmn Per Cell Item");
-          ServedPlmnPerCellListItem_t *sppcl =
-              (ServedPlmnPerCellListItem_t *) calloc (1, sizeof (ServedPlmnPerCellListItem_t));
-          Ptr<OctetString> servedPlmnId = Create<OctetString> (servedPlmnCell->m_plmId, 3);
-          sppcl->pLMN_Identity = servedPlmnId->GetValue ();
-          
-          EPC_DU_PM_Container_t *edpc =
-              (EPC_DU_PM_Container_t *) calloc (1, sizeof (EPC_DU_PM_Container_t));
-
-          for (auto perQciReportItem : servedPlmnCell->m_perQciReportItems)
-            {
-              NS_LOG_LOGIC ("O-DU: Add Per QCI Report Item");
-              PerQCIReportListItem_t *pqrl =
-                  (PerQCIReportListItem_t *) calloc (1, sizeof (PerQCIReportListItem_t));
-              pqrl->qci = perQciReportItem->m_qci;
-              
-              NS_ABORT_MSG_IF ((perQciReportItem->m_dlPrbUsage < 0) | (perQciReportItem->m_dlPrbUsage > 100), 
-                              "As per ASN definition, dl_PRBUsage should be between 0 and 100");
-              long *dlUsedPrbs = (long *) calloc (1, sizeof (long));
-              *dlUsedPrbs = perQciReportItem->m_dlPrbUsage;
-              pqrl->dl_PRBUsage = dlUsedPrbs;
-              NS_LOG_LOGIC ("DL PRBs " << dlUsedPrbs);
-              
-              NS_ABORT_MSG_IF ((perQciReportItem->m_ulPrbUsage < 0) | (perQciReportItem->m_ulPrbUsage > 100), 
-                              "As per ASN definition, ul_PRBUsage should be between 0 and 100");
-              long *ulUsedPrbs = (long *) calloc (1, sizeof (long));
-              *ulUsedPrbs = perQciReportItem->m_ulPrbUsage;
-              pqrl->ul_PRBUsage = ulUsedPrbs;
-              ASN_SEQUENCE_ADD (&edpc->perQCIReportList_du.list, pqrl);
-            }
-
-          sppcl->du_PM_EPC = edpc;
-          ASN_SEQUENCE_ADD (&crrli->servedPlmnPerCellList.list, sppcl);
-        }
-    }
-  ranContainer->choice.oDU = odu;
-  ranContainer->present = PF_Container_PR_oDU;
-}
-
-void
-KpmIndicationMessage::FillAndEncodeKpmIndicationMessage (E2SM_KPM_IndicationMessage_t *descriptor,
-                                                         KpmIndicationMessageValues values)
-{
-  // Create and fill the RAN Container
-  PF_Container_t *ranContainer = (PF_Container_t *) calloc (1, sizeof (PF_Container_t));
-  FillPmContainer (ranContainer, values.m_pmContainerValues);
-
-  //------- now fill the message
-  PM_Containers_Item_t *containers_list =
-      (PM_Containers_Item_t *) calloc (1, sizeof (PM_Containers_Item_t));
-  containers_list->performanceContainer = ranContainer;
-
-  E2SM_KPM_IndicationMessage_Format1_t *format = (E2SM_KPM_IndicationMessage_Format1_t *) calloc (
-      1, sizeof (E2SM_KPM_IndicationMessage_Format1_t));
-
-  ASN_SEQUENCE_ADD (&format->pm_Containers.list, containers_list);
-
-  // Cell Object ID
-  CellObjectID_t *cellObjectID = (CellObjectID_t *) calloc (1, sizeof (CellObjectID_t));
-  cellObjectID->size = values.m_cellObjectId.length ();
-  cellObjectID->buf = (uint8_t *) calloc (1, cellObjectID->size);
-  memcpy (cellObjectID->buf, values.m_cellObjectId.c_str (), values.m_cellObjectId.length ());
-  format->cellObjectID = *cellObjectID;
-  
-  // Measurement Information List
   if (values.m_cellMeasurementItems)
-  {
-      format->list_of_PM_Information = (E2SM_KPM_IndicationMessage_Format1::
-                                        E2SM_KPM_IndicationMessage_Format1__list_of_PM_Information *) 
-                                        calloc (1, sizeof (E2SM_KPM_IndicationMessage_Format1::
-                                        E2SM_KPM_IndicationMessage_Format1__list_of_PM_Information));
-    for (auto item : values.m_cellMeasurementItems->GetItems ())
     {
-      ASN_SEQUENCE_ADD (&format->list_of_PM_Information->list, item->GetPointer ());
-    }
-  }
-  
-  // List of matched UEs
-  if (values.m_ueIndications.size () > 0)
-  {
-    format->list_of_matched_UEs = (E2SM_KPM_IndicationMessage_Format1_t::E2SM_KPM_IndicationMessage_Format1__list_of_matched_UEs*) 
-                                   calloc (1, sizeof (E2SM_KPM_IndicationMessage_Format1_t::E2SM_KPM_IndicationMessage_Format1__list_of_matched_UEs));
-
-
-    for (auto ueIndication : values.m_ueIndications)
-      {
-        PerUE_PM_Item_t *perUEItem = (PerUE_PM_Item_t *) calloc (1, sizeof (PerUE_PM_Item_t));
-
-        // UE Identity
-        perUEItem->ueId = ueIndication->GetId ();
-        // xer_fprint (stderr, &asn_DEF_UE_Identity, &perUEItem->ueId);
-        // NS_LOG_UNCOND ("Values " << ueIndication->m_drbIPLateDlUEID);
-
-        // List of Measurements PM information
-        perUEItem->list_of_PM_Information =
-            (PerUE_PM_Item::PerUE_PM_Item__list_of_PM_Information *) calloc (
-                1, sizeof (PerUE_PM_Item::PerUE_PM_Item__list_of_PM_Information));
-
-        for (auto measurementItem : ueIndication->GetItems ())
+      for (auto &item : values.m_cellMeasurementItems->GetItems ())
         {
-          ASN_SEQUENCE_ADD (&perUEItem->list_of_PM_Information->list,
-            measurementItem->GetPointer ());
+          orderedItems.push_back (item);
         }
-        ASN_SEQUENCE_ADD (&format->list_of_matched_UEs->list, perUEItem);
-      }
-  }
+    }
 
-  descriptor->present = E2SM_KPM_IndicationMessage_PR_indicationMessage_Format1;
-  descriptor->choice.indicationMessage_Format1 = format;
-  
-  
-  NS_LOG_INFO (xer_fprint (stderr, &asn_DEF_E2SM_KPM_IndicationMessage_Format1, format));
+  /* UE items: flatten all UE indications — each UE's items appended in
+   * AddItem order.  Set iteration order is used across UEs (consistent
+   * within one invocation; sufficient for parallel record/infoList build). */
+  for (auto &ueList : values.m_ueIndications)
+    {
+      for (auto &item : ueList->GetItems ())
+        {
+          orderedItems.push_back (item);
+        }
+    }
 
-  // xer_fprint (stderr, &asn_DEF_PF_Container, ranContainer);
+  if (orderedItems.empty ())
+    {
+      NS_LOG_WARN ("KpmIndicationMessage: no measurement items to encode; "
+                   "producing empty Format1 (measData has 0 records).");
+    }
+
+  /* ---- Build MeasurementRecord: N MeasurementRecordItems ---- */
+  /* One MeasurementRecord per MeasurementDataItem (v3 style-1 shape). */
+  MeasurementRecord_t *record =
+      (MeasurementRecord_t *) calloc (1, sizeof (MeasurementRecord_t));
+
+  /* ---- Build MeasurementInfoList: N MeasurementInfoItems (parallel) ---- */
+  MeasurementInfoList_t *infoList =
+      (MeasurementInfoList_t *) calloc (1, sizeof (MeasurementInfoList_t));
+
+  for (auto &item : orderedItems)
+    {
+      /* --- MeasurementRecordItem ---------------------------------------- */
+      MeasurementRecordItem_t *recItem =
+          (MeasurementRecordItem_t *) calloc (1, sizeof (MeasurementRecordItem_t));
+
+      switch (item->GetValueType ())
+        {
+          case MeasurementItem::ValueType::Int:
+            /* integer field is unsigned long in v3 asn1c CHOICE. A negative
+             * metric would wrap silently and still pass the constraint check —
+             * warn loudly (all reduced-PM KPM metrics are >=0, but the API
+             * accepts any signed long). */
+            if (item->GetIntValue () < 0)
+              {
+                NS_LOG_WARN ("KpmIndicationMessage: metric '" << item->GetName ()
+                             << "' has negative value " << item->GetIntValue ()
+                             << " — wraps to unsigned in the v3 integer record.");
+              }
+            recItem->present        = MeasurementRecordItem_PR_integer;
+            recItem->choice.integer = (unsigned long) item->GetIntValue ();
+            break;
+
+          case MeasurementItem::ValueType::Real:
+            recItem->present     = MeasurementRecordItem_PR_real;
+            recItem->choice.real = item->GetRealValue ();
+            break;
+
+          case MeasurementItem::ValueType::RRC:
+            /* L3-RRC measurements have no v3 MeasurementRecordItem mapping.
+             * Emitted as noValue per spec extension practice; logged so the
+             * caller can detect RRC items are silently dropped from the PDU. */
+            NS_LOG_WARN ("KpmIndicationMessage: item '" << item->GetName ()
+                         << "' is an L3-RRC value — no v3 MeasurementRecordItem "
+                            "mapping; emitted as noValue.");
+            recItem->present = MeasurementRecordItem_PR_noValue;
+            break;
+
+          default:
+            NS_LOG_WARN ("KpmIndicationMessage: unknown value type for item '"
+                         << item->GetName () << "'; emitted as noValue.");
+            recItem->present = MeasurementRecordItem_PR_noValue;
+            break;
+        }
+
+      ASN_SEQUENCE_ADD (&record->list, recItem);
+
+      /* --- MeasurementInfoItem (parallel to recItem above) -------------- */
+      MeasurementInfoItem_t *infoItem = BuildMeasInfoItem (item->GetName ());
+      ASN_SEQUENCE_ADD (&infoList->list, infoItem);
+    }
+
+  /* ---- MeasurementDataItem: shallow-copy the record, free record wrapper ---- */
+  MeasurementDataItem_t *dataItem =
+      (MeasurementDataItem_t *) calloc (1, sizeof (MeasurementDataItem_t));
+  dataItem->measRecord = *record;
+  dataItem->incompleteFlag = (long *) calloc (1, sizeof (long));
+  *dataItem->incompleteFlag = 0;
+  free (record); /* shallow-copy done; record->list.array now owned by dataItem */
+
+  /* ---- MeasurementData: one MeasurementDataItem ---- */
+  MeasurementData_t *measData =
+      (MeasurementData_t *) calloc (1, sizeof (MeasurementData_t));
+  ASN_SEQUENCE_ADD (&measData->list, dataItem);
+
+  /* ---- Assemble IndicationMessage-Format1 ---- */
+  E2SM_KPM_IndicationMessage_Format1_t *fmt =
+      (E2SM_KPM_IndicationMessage_Format1_t *) calloc (
+          1, sizeof (E2SM_KPM_IndicationMessage_Format1_t));
+
+  /* granulPeriod = 1 ms (same as reference) */
+  fmt->granulPeriod = (GranularityPeriod_t *) calloc (1, sizeof (GranularityPeriod_t));
+  *fmt->granulPeriod = 1;
+
+  /* measData: shallow-copy value into fmt, free wrapper */
+  fmt->measData = *measData;
+  free (measData);
+
+  /* measInfoList: pointer field (OPTIONAL) */
+  fmt->measInfoList = infoList;
+
+  /* ---- Wire Format1 into the outer wrapper ---- */
+  descriptor->indicationMessage_formats.present =
+      E2SM_KPM_IndicationMessage__indicationMessage_formats_PR_indicationMessage_Format1;
+  descriptor->indicationMessage_formats.choice.indicationMessage_Format1 = fmt;
+
+  NS_LOG_INFO (xer_fprint (stderr, &asn_DEF_E2SM_KPM_IndicationMessage_Format1, fmt));
+
+  /* ---- ASN.1 constraint check (I1: soft failure — log + skip, no exit) ---- */
+  char errBuf[300] = {0};
+  size_t errLen = sizeof (errBuf);
+  if (asn_check_constraints (&asn_DEF_E2SM_KPM_IndicationMessage, descriptor,
+                              errBuf, &errLen))
+    {
+      NS_LOG_WARN ("KpmIndicationMessage: constraint check failed: " << errBuf
+                   << " — skipping encode for this report.");
+      /* m_buffer/m_size stay 0 (set at top); free the Format1 sub-tree before
+       * the caller deletes the (shell-only) descriptor, else this report leaks. */
+      ASN_STRUCT_FREE (asn_DEF_E2SM_KPM_IndicationMessage_Format1, fmt);
+      descriptor->indicationMessage_formats.choice.indicationMessage_Format1 = nullptr;
+      return;
+    }
+
   Encode (descriptor);
 
-  free (cellObjectID);
-  // free (ranContainer);
-  ASN_STRUCT_FREE (asn_DEF_E2SM_KPM_IndicationMessage_Format1, format);
-}
-
-MeasurementItemList::MeasurementItemList ()
-{
-  m_id = NULL;
-}
-
-MeasurementItemList::MeasurementItemList (std::string id)
-{
-  m_id = Create<OctetString> (id, id.length ());
-}
-
-MeasurementItemList::~MeasurementItemList (){};
-
-std::vector<Ptr<MeasurementItem>>
-MeasurementItemList::GetItems ()
-{
-  return m_items;
-}
-
-OCTET_STRING_t
-MeasurementItemList::GetId ()
-{
-  NS_ABORT_IF (m_id == NULL);
-  return m_id->GetValue ();
+  /* Free the calloc'd Format1 sub-tree (measData records, measInfoList items,
+   * granulPeriod, fmt) after Encode() has copied the wire buffer.  The ctor's
+   * `delete descriptor` only frees the outer shell — not the asn1c sub-tree —
+   * so omitting this leaks one full message tree per periodic report. Mirrors
+   * the v2 original's ASN_STRUCT_FREE(...Format1, ...). */
+  ASN_STRUCT_FREE (asn_DEF_E2SM_KPM_IndicationMessage_Format1, fmt);
+  descriptor->indicationMessage_formats.choice.indicationMessage_Format1 = nullptr;
 }
 
 } // namespace ns3

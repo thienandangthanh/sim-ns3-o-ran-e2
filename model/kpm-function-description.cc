@@ -71,14 +71,32 @@ KpmFunctionDescription::Encode (E2SM_KPM_RANfunction_Description_t *descriptor)
   m_size = encodedMsg.result.encoded;
 }
 
-// E2SM-KPM v3.00 advertised measurements (golden parity with OSC encode_kpm.cpp).
+// E2SM-KPM v3.00 advertised cell measurements — aligned to the reduced-PM Du
+// cell emit path in MmWaveIndicationMessageHelper::AddDuCellPmItem()
+// (mmwave-indication-message-helper.cc).
+//
+// Reduced-PM cell items emitted unconditionally (m_reducedPmValues = true):
+//   TB.TotNbrDlInitial.Qpsk    macQpskCellSpecific
+//   TB.TotNbrDlInitial.16Qam   mac16QamCellSpecific
+//   TB.TotNbrDlInitial.64Qam   mac64QamCellSpecific
+//   RRU.PrbUsedDl              prbUtilizationDl  (ceil'd to long)
+//   DRB.MeanActiveUeDl         activeUeDl
+//
+// The descriptor advertises this exact set so that
+//   len(advertised cell names) == no_of_cell_metrics
+// satisfies the kpimon-go gate (Phase 7 live verification).
+//
+// TODO(Phase7-live): reconcile per-container / per-style descriptor entries
+// against live kpimon-go subscription decode.  CuUp PDCP metrics and CuCp RRC
+// metrics are not represented here — add separate report-style meas-info-action
+// lists for those containers after live verification confirms the indices.
 static const char *const g_kpmPerfMeasurements[] = {
-    "DRB.RlcSduTransmittedVolumeDL", "DRB.RlcSduTransmittedVolumeUL",
-    "DRB.PerDataVolumeDLDist.Bin",   "DRB.PerDataVolumeULDist.Bin",
-    "DRB.RlcPacketDropRateDLDist",   "DRB.PacketLossRateULDist",
-    "L1M.DL-SS-RSRP.SSB",            "L1M.DL-SS-SINR.SSB",
-    "L1M.UL-SRS-RSRP"};
-static const int g_kpmNumberMeasurements = 9;
+    "TB.TotNbrDlInitial.Qpsk",
+    "TB.TotNbrDlInitial.16Qam",
+    "TB.TotNbrDlInitial.64Qam",
+    "RRU.PrbUsedDl",
+    "DRB.MeanActiveUeDl"};
+static const int g_kpmNumberMeasurements = 5;
 
 // Fill an OCTET_STRING/PrintableString from a NUL-terminated C string.
 static void
