@@ -59,7 +59,8 @@ namespace kpm_v3 {
  */
 inline E2AP_PDU_t *
 BuildSubscriptionResponse (E2Sim &e2sim, E2AP_PDU_t *sub_req_pdu,
-                           std::vector<long> &accepted, std::vector<long> &rejected)
+                           std::vector<long> &accepted, std::vector<long> &rejected,
+                           long *out_requestorId = nullptr, long *out_instanceId = nullptr)
 {
   if (!sub_req_pdu || sub_req_pdu->present != E2AP_PDU_PR_initiatingMessage
       || !sub_req_pdu->choice.initiatingMessage)
@@ -140,6 +141,11 @@ BuildSubscriptionResponse (E2Sim &e2sim, E2AP_PDU_t *sub_req_pdu,
     {
       fprintf (stderr, "[sub] no REPORT action to admit (rejected=%zu)\n", rejected.size ());
     }
+
+  /* Surface the RICrequestID so the Phase-6 indication loop can address the
+   * RICindication back to the same subscriber (the offline test omits these). */
+  if (out_requestorId) *out_requestorId = reqRequestorId;
+  if (out_instanceId) *out_instanceId = reqInstanceId;
 
   E2AP_PDU_t *resp = (E2AP_PDU_t *) calloc (1, sizeof (E2AP_PDU_t));
   long *acc = accepted.empty () ? nullptr : &accepted[0];

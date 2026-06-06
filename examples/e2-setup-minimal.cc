@@ -37,11 +37,13 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include <unistd.h>
 
 /* Use installed headers — angle brackets, path-prefix included in CFLAGS. */
 #include "e2sim.hpp"
 #include "kpm-func-desc-v3.h"
 #include "kpm-subscription-handler.h"
+#include "kpm-indication-builder.h"
 
 extern "C" {
 #include "OCTET_STRING.h"
@@ -54,14 +56,25 @@ extern "C" {
  * pointer — same pattern as the OSC kpm_sim reference. */
 static E2Sim *g_e2sim = nullptr;
 
-/* Live RICsubscriptionRequest handler (M4).  Builds the success response off the
- * thread that reads SCTP, then sends it.  See kpm-subscription-handler.h for the
- * accept policy and the deliberate no-free of the response PDU. */
+/* RANfunctionID carried in the RICindication.  The callback ABI (void(*)(E2AP_PDU*))
+ * has no func-id slot, so — like the OSC reference's global gFuncId — we use the
+ * id the KPM function is registered under (=2, kpimon-go).  libe2sim's response
+ * encoder hardcodes 147 in the *subscription* response, but the *indication*
+ * encoder takes the func id parameterized, so kpimon-go (filters RanFunctionId==2)
+ * receives the indication under the id it expects. */
+static const long KPM_RAN_FUNC_ID = 2;
+
+/* Live RICsubscriptionRequest handler (M4 + M5).  Builds the success response off
+ * the thread that reads SCTP, sends it, then (Phase 6) emits a short burst of
+ * E2SM-KPM v3 RICindications for the admitted action.  See the two handler
+ * headers for the accept policy and the deliberate no-free of the built PDUs. */
 static void
 HandleKpmSubscription (E2AP_PDU_t *req)
 {
     std::vector<long> accepted, rejected;
-    E2AP_PDU_t *resp = kpm_v3::BuildSubscriptionResponse (*g_e2sim, req, accepted, rejected);
+    long requestorId = 0, instanceId = 0;
+    E2AP_PDU_t *resp = kpm_v3::BuildSubscriptionResponse (*g_e2sim, req, accepted, rejected,
+                                                          &requestorId, &instanceId);
     if (!resp) {
         fprintf (stderr, "[e2-setup-minimal] subscription parse failed; no response sent\n");
         return;
@@ -71,8 +84,34 @@ HandleKpmSubscription (E2AP_PDU_t *req)
              "%zu rejected -> sending RICsubscriptionResponse(success)\n",
              accepted.size (), rejected.size ());
     g_e2sim->encode_and_send_sctp_data (resp);
-    /* Phase 6 will start the RIC indication report loop for the admitted action
-     * here.  resp is intentionally not freed (see handler header). */
+    /* resp is intentionally not freed (see kpm-subscription-handler.h). */
+
+    if (accepted.empty ()) {
+        fprintf (stderr, "[e2-setup-minimal] no admitted action -> no indications emitted\n");
+        return;
+    }
+
+    /* Phase 6 (M5): emit a burst of dummy E2SM-KPM v3 indications for the first
+     * admitted action.  Count/interval overridable for the harness; defaults give
+     * kpimon-go enough reports to decode and enough wire frames to capture. */
+    long action = accepted[0];
+    const char *cnt_env = getenv ("KPM_IND_COUNT");
+    const char *int_env = getenv ("KPM_IND_INTERVAL_MS");
+    long count = cnt_env ? strtol (cnt_env, nullptr, 10) : 10;
+    long interval_ms = int_env ? strtol (int_env, nullptr, 10) : 1000;
+    if (count <= 0) count = 10;
+    if (interval_ms < 0) interval_ms = 1000;
+
+    fprintf (stderr,
+             "[e2-setup-minimal] starting indication report loop: %ld indication(s) "
+             "@ %ld ms for action %ld (func %ld)\n",
+             count, interval_ms, action, KPM_RAN_FUNC_ID);
+    for (long sn = 1; sn <= count; sn++) {
+        kpm_v3::SendIndication (*g_e2sim, requestorId, instanceId, KPM_RAN_FUNC_ID, action, sn);
+        if (sn < count && interval_ms > 0)
+            usleep ((useconds_t) interval_ms * 1000);
+    }
+    fprintf (stderr, "[e2-setup-minimal] indication report loop done (%ld sent)\n", count);
 }
 
 int main(int argc, char* argv[]) {

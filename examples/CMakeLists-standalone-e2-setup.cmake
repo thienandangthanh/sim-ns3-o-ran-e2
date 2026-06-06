@@ -44,3 +44,4 @@ add_e2_target(e2-setup-minimal      e2-setup-minimal.cc)
 # --- offline correctness proofs (no network) ---
 add_e2_target(kpm-func-desc-v3-test kpm-func-desc-v3-test.cc)  # Phase 4 (M3 precondition)
 add_e2_target(kpm-subscription-test kpm-subscription-test.cc)  # Phase 5 (M4 precondition)
+add_e2_target(kpm-indication-test   kpm-indication-test.cc)    # Phase 6 (M5 precondition)
