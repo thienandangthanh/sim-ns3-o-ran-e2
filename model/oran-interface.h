@@ -29,11 +29,11 @@
 #include <ns3/kpm-indication.h>
 #include <ns3/kpm-function-description.h>
 #include <ns3/function-description.h>
-/* E2SM-RC (RAN Control) deferred per KPM-only L-release migration; the OSC
- * e2sim install (/usr/local/include/e2sim) ships no E2SM-RC asn1c types.
- * ric-control-message.cc/.h and ric-control-function-description.cc/.h are
- * excluded from build.  Minimal stubs below keep lte-enb-net-device.cc
- * (src/lte) and mmwave-enb-net-device.cc (src/mmwave) compiling. */
+/* E2SM-RC (RAN Control): RC-2.0 asn.1 types are installed (Phase 3) and the real
+ * RicControlMessage decoder is re-enabled (Phase 4, ric-control-message.h).
+ * Only RicControlFunctionDescription remains a stub — its v1-era
+ * RIC-ControlStyle-Item tree does not exist in RC-2.0; the RANFunctionDefinition
+ * advertisement rewrite is deferred to Phase 5. */
 #include "e2sim.hpp"
 #include <functional>
 #include <unordered_map>
@@ -51,50 +51,11 @@ using SmCallback = E2TermCallback;
 namespace ns3 {
 
 /* ==========================================================================
- * Minimal stub types for E2SM-RC — E2SM-RC ASN.1 headers are absent from the
- * v3 asn1c install.  These stubs expose only the members accessed by
- * lte-enb-net-device.cc so that translation unit compiles; the RC control path
- * is dead code in the KPM-only scenario (ControlMessageReceivedCallback is
- * never invoked via the live E2 path).
+ * E2SM-RC compile shim — RicControlMessage now lives in ric-control-message.h
+ * (real RC-2.0 decoder, Phase 4).  Only RicControlFunctionDescription remains a
+ * stub: the RC-2.0 RANFunctionDefinition advertisement (real OID + ControlStyle
+ * tree) is deferred to Phase 5, so callers still get a null-buffer descriptor.
  * ========================================================================== */
-
-/** Stub for E2SM_RC_ControlHeader_Format1_t::ueId (OCTET_STRING shape). */
-struct RcControlHeaderUeId_t
-{
-  uint8_t *buf  {nullptr};
-  std::size_t size {0};
-};
-
-/** Stub for E2SM_RC_ControlHeader_Format1_t. */
-struct RcControlHeaderFormat1Stub
-{
-  RcControlHeaderUeId_t ueId;
-};
-
-/** Stub for RicControlMessage — compile shim, no real decoding. */
-class RicControlMessage : public SimpleRefCount<RicControlMessage>
-{
-public:
-  enum ControlMessageRequestIdType { TS = 1001, QoS = 1002 };
-
-  explicit RicControlMessage (E2AP_PDU_t * /*pdu*/)
-      : m_requestType (TS), m_e2SmRcControlHeaderFormat1 (new RcControlHeaderFormat1Stub ())
-  {
-  }
-
-  ~RicControlMessage ()
-  {
-    delete m_e2SmRcControlHeaderFormat1;
-  }
-
-  ControlMessageRequestIdType m_requestType;
-  RcControlHeaderFormat1Stub *m_e2SmRcControlHeaderFormat1;
-
-  std::string GetSecondaryCellIdHO () const
-  {
-    return "";
-  }
-};
 
 /** Stub for RicControlFunctionDescription — compile shim only. */
 class RicControlFunctionDescription : public FunctionDescription

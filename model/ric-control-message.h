@@ -21,56 +21,64 @@
  *		   Tommaso Zugno <tommasozugno@gmail.com>
  *		   Michele Polese <michele.polese@gmail.com>
  */
- 
+
 #ifndef RIC_CONTROL_MESSAGE_H
 #define RIC_CONTROL_MESSAGE_H
 
 #include "ns3/object.h"
-#include <ns3/asn1c-types.h>
 
 extern "C" {
   #include "E2AP-PDU.h"
   #include "E2SM-RC-ControlHeader.h"
-  #include "E2SM-RC-ControlMessage.h"
   #include "E2SM-RC-ControlHeader-Format1.h"
+  #include "E2SM-RC-ControlMessage.h"
   #include "E2SM-RC-ControlMessage-Format1.h"
   #include "RICcontrolRequest.h"
   #include "ProtocolIE-Field.h"
   #include "InitiatingMessage.h"
-  #include "CellGlobalID.h"
-  #include "NRCGI.h"
- }
+}
 
 namespace ns3 {
 
-  class RicControlMessage : public SimpleRefCount<RicControlMessage>
-  {
-  public:
-    enum ControlMessageRequestIdType { TS = 1001, QoS = 1002 };
-    RicControlMessage (E2AP_PDU_t *pdu);
-    ~RicControlMessage ();
+/**
+ * Decodes an incoming E2AP RIC Control Request that carries an E2SM-RC v2.0
+ * payload. Phase 4 (M-RC1) = receive + ACK: this class extracts the outer
+ * E2AP identifiers needed to build the Control Acknowledge and decodes the
+ * inner E2SM-RC ControlHeader/ControlMessage Format1 for logging/validation.
+ *
+ * The RAN-parameter extraction and the Control-Action → handover mapping
+ * (v1-era `ranParameters_List` / secondary-cell handover) are intentionally
+ * NOT ported here — RC-2.0 reshapes them into `ranP_List`, which is Phase 5
+ * ("RC act: forced handover").
+ */
+class RicControlMessage : public SimpleRefCount<RicControlMessage>
+{
+public:
+  enum ControlMessageRequestIdType { TS = 1001, QoS = 1002, UNKNOWN = 0 };
 
-    ControlMessageRequestIdType m_requestType;
-    
-    static std::vector<RANParameterItem> ExtractRANParametersFromControlMessage (
-      E2SM_RC_ControlMessage_Format1_t *e2SmRcControlMessageFormat1);
-    
-    std::vector<RANParameterItem> m_valuesExtracted;
-    RANfunctionID_t m_ranFunctionId;
-    RICrequestID_t m_ricRequestId;
-    RICcallProcessID_t m_ricCallProcessId;
-    E2SM_RC_ControlHeader_Format1_t *m_e2SmRcControlHeaderFormat1;
-    std::string GetSecondaryCellIdHO ();
+  RicControlMessage (E2AP_PDU_t *pdu);
+  ~RicControlMessage ();
 
-  private:
-    /**
-    * Decodes the RIC Control message .
-    *
-    * \param pdu PDU passed by the RIC
-    */
-    void DecodeRicControlMessage (E2AP_PDU_t *pdu);
-    std::string m_secondaryCellId;
-  };
-}
+  // Outer E2AP identifiers (echoed back in the Control Acknowledge).
+  RICrequestID_t     m_ricRequestId {};
+  RANfunctionID_t    m_ranFunctionId {0};
+  RICcallProcessID_t m_ricCallProcessId {};
+  bool               m_hasCallProcessId {false};
+
+  // RICcontrolAckRequest value if present (-1 = absent). NO_ACK/ACK/NACK.
+  long m_ricControlAckRequest {-1};
+
+  // Best-effort classification from the RIC Requestor ID (kept for logging).
+  ControlMessageRequestIdType m_requestType {UNKNOWN};
+
+  // Decoded inner control header (Format1), owned by this object; null if the
+  // header IE was absent or failed to decode.
+  E2SM_RC_ControlHeader_t *m_e2SmRcControlHeader {nullptr};
+
+private:
+  void DecodeRicControlMessage (E2AP_PDU_t *pdu);
+};
+
+} // namespace ns3
 
 #endif /* RIC_CONTROL_MESSAGE_H */

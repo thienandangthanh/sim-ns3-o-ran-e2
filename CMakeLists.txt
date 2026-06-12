@@ -44,11 +44,12 @@ build_lib(
                  model/function-description.cc
                  model/kpm-indication.cc
                  model/kpm-function-description.cc
-                 # E2SM-RC (RAN Control) deferred per KPM-only L-release migration:
-                 # the OSC e2sim install (/usr/local/include/e2sim) ships no E2SM-RC
-                 # asn1c types, and nothing in the KPM scenario-zero path references
-                 # these classes. Re-enable when porting E2SM-RC v2.0 (follow-up).
-                 # model/ric-control-message.cc
+                 # E2SM-RC (RAN Control): RC-2.0 asn.1 types now installed (Phase 3).
+                 # ric-control-message.cc re-enabled for Phase 4 (RC receive + ACK).
+                 # ric-control-function-description.cc still deferred — its v1-era
+                 # RIC-ControlStyle-Item tree is absent in RC-2.0 (RANFunctionDefinition
+                 # rewrite is Phase 5).
+                 model/ric-control-message.cc
                  # model/ric-control-function-description.cc
                  helper/oran-interface-helper.cc
                  helper/indication-message-helper.cc
@@ -60,8 +61,9 @@ build_lib(
                  model/function-description.h
                  model/kpm-indication.h
                  model/kpm-function-description.h
-                 # E2SM-RC headers deferred (see SOURCE_FILES note above)
-                 # model/ric-control-message.h
+                 # E2SM-RC: ric-control-message.h re-enabled (Phase 4);
+                 # ric-control-function-description.h deferred (Phase 5).
+                 model/ric-control-message.h
                  # model/ric-control-function-description.h
                  helper/indication-message-helper.h
                  helper/lte-indication-message-helper.h
