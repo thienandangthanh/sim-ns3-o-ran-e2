@@ -33,6 +33,15 @@ extern "C" {
   #include "E2SM-RC-ControlHeader-Format1.h"
   #include "E2SM-RC-ControlMessage.h"
   #include "E2SM-RC-ControlMessage-Format1.h"
+  #include "E2SM-RC-ControlMessage-Format1-Item.h"
+  #include "RANParameter-ValueType.h"
+  #include "RANParameter-ValueType-Choice-Structure.h"
+  #include "RANParameter-ValueType-Choice-ElementFalse.h"
+  #include "RANParameter-STRUCTURE.h"
+  #include "RANParameter-STRUCTURE-Item.h"
+  #include "RANParameter-Value.h"
+  #include "UEID.h"
+  #include "UEID-GNB.h"
   #include "RICcontrolRequest.h"
   #include "ProtocolIE-Field.h"
   #include "InitiatingMessage.h"
@@ -42,14 +51,10 @@ namespace ns3 {
 
 /**
  * Decodes an incoming E2AP RIC Control Request that carries an E2SM-RC v2.0
- * payload. Phase 4 (M-RC1) = receive + ACK: this class extracts the outer
- * E2AP identifiers needed to build the Control Acknowledge and decodes the
- * inner E2SM-RC ControlHeader/ControlMessage Format1 for logging/validation.
- *
- * The RAN-parameter extraction and the Control-Action → handover mapping
- * (v1-era `ranParameters_List` / secondary-cell handover) are intentionally
- * NOT ported here — RC-2.0 reshapes them into `ranP_List`, which is Phase 5
- * ("RC act: forced handover").
+ * payload. Extracts the outer E2AP identifiers needed to build the Control
+ * Acknowledge (Phase 4 / M-RC1) and, for Phase 5 ("RC act: forced handover"),
+ * the inner ControlHeader Format1 UE identity (`m_imsi`) and the ControlMessage
+ * Format1 `ranP_List` target (secondary) cell (`m_targetCellId`).
  */
 class RicControlMessage : public SimpleRefCount<RicControlMessage>
 {
@@ -75,8 +80,20 @@ public:
   // header IE was absent or failed to decode.
   E2SM_RC_ControlHeader_t *m_e2SmRcControlHeader {nullptr};
 
+  // UE IMSI from ControlHeader Format1 UEID.gNB_UEID.amf_UE_NGAP_ID; the xApp
+  // sets amfUENGAPID = the ns-3 UE IMSI. 0 if absent/not a gNB UEID. (Phase 5)
+  uint64_t m_imsi {0};
+
+  // Target (secondary) cell ID from ControlMessage Format1 nested ranP_List
+  // NRCGI (last byte). 0 if absent/malformed. (Phase 5 forced handover)
+  uint16_t m_targetCellId {0};
+
 private:
   void DecodeRicControlMessage (E2AP_PDU_t *pdu);
+
+  // Navigate the nested ranP_List to the NRCGI OCTET STRING leaf and return its
+  // last byte as the ns-3 target cell ID, or 0 if absent/malformed.
+  static uint16_t ExtractTargetCellFromRanPList (E2SM_RC_ControlMessage_Format1_t *fmt1);
 };
 
 } // namespace ns3

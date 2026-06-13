@@ -47,6 +47,15 @@ RicControlMessage::~RicControlMessage ()
 void
 RicControlMessage::DecodeRicControlMessage (E2AP_PDU_t *pdu)
 {
+  // Guard the attacker-influenced E2AP PDU: a Control Request must be an
+  // initiatingMessage. A successful/unsuccessful-outcome PDU has a null
+  // initiatingMessage union member → deref below would segfault.
+  if (!pdu || pdu->present != E2AP_PDU_PR_initiatingMessage ||
+      !pdu->choice.initiatingMessage)
+    {
+      NS_LOG_ERROR ("[E2SM] RIC Control PDU is not an initiatingMessage; ignoring");
+      return;
+    }
   InitiatingMessage_t *mess = pdu->choice.initiatingMessage;
   auto *request = (RICcontrolRequest_t *) &mess->value.choice.RICcontrolRequest;
   NS_LOG_INFO (xer_fprint (stderr, &asn_DEF_RICcontrolRequest, request));
@@ -126,6 +135,18 @@ RicControlMessage::DecodeRicControlMessage (E2AP_PDU_t *pdu)
                   NS_LOG_INFO ("[E2SM] RC ControlHeader Format1: ric_Style_Type="
                                << fmt1->ric_Style_Type << " ric_ControlAction_ID="
                                << fmt1->ric_ControlAction_ID);
+
+                  // Phase 5: UE IMSI = ControlHeader UEID.gNB_UEID.amf_UE_NGAP_ID
+                  // (the xApp sets amfUENGAPID to the ns-3 UE IMSI).
+                  if (fmt1->ueID.present == UEID_PR_gNB_UEID && fmt1->ueID.choice.gNB_UEID)
+                    {
+                      unsigned long val = 0;
+                      if (asn_INTEGER2ulong (&fmt1->ueID.choice.gNB_UEID->amf_UE_NGAP_ID, &val) == 0)
+                        {
+                          m_imsi = (uint64_t) val;
+                          NS_LOG_INFO ("[E2SM] UEID amf_UE_NGAP_ID (imsi) = " << m_imsi);
+                        }
+                    }
                 }
             }
           else
@@ -155,8 +176,12 @@ RicControlMessage::DecodeRicControlMessage (E2AP_PDU_t *pdu)
               if (msg->ric_controlMessage_formats.present ==
                   E2SM_RC_ControlMessage__ric_controlMessage_formats_PR_controlMessage_Format1)
                 {
-                  NS_LOG_DEBUG ("[E2SM] RC ControlMessage Format1 decoded "
-                                "(RAN-parameter extraction deferred to Phase 5)");
+                  // Phase 5: extract the target (secondary) cell from ranP_List.
+                  E2SM_RC_ControlMessage_Format1_t *fmt1 =
+                      msg->ric_controlMessage_formats.choice.controlMessage_Format1;
+                  m_targetCellId = ExtractTargetCellFromRanPList (fmt1);
+                  NS_LOG_INFO ("[E2SM] RC ControlMessage Format1: targetCellId="
+                               << m_targetCellId);
                 }
             }
           // The message body is only validated/logged for M-RC1; free it now.
@@ -177,6 +202,76 @@ RicControlMessage::DecodeRicControlMessage (E2AP_PDU_t *pdu)
     }
 
   NS_LOG_INFO ("End of DecodeRicControlMessage");
+}
+
+// Navigate the 4-level nested ranP_List built by the rc xApp for a handover:
+//   Format1[0](RANParameter ID 1) -> Structure
+//     -> [0](ID 2) -> Structure
+//       -> [0](ID 3) -> Structure
+//         -> [0](ID 4) -> ElementFalse -> valueOctS (NRCGI octets)
+// Returns the last byte of the NRCGI as the ns-3 target cell ID, or 0 if the
+// structure is absent/malformed. Defensive at every level (the message is
+// attacker-controlled). NOTE: the exact NRCGI->cellId encoding is validated
+// live (xer dump) on first bring-up — see phase-05 open question 1.
+uint16_t
+RicControlMessage::ExtractTargetCellFromRanPList (E2SM_RC_ControlMessage_Format1_t *fmt1)
+{
+  if (!fmt1 || fmt1->ranP_List.list.count == 0 || !fmt1->ranP_List.list.array[0])
+    return 0;
+
+  // Level 0: Format1_Item has a non-pointer ranParameter_valueType.
+  E2SM_RC_ControlMessage_Format1_Item_t *item0 = fmt1->ranP_List.list.array[0];
+  RANParameter_ValueType_t *vt0 = &item0->ranParameter_valueType;
+  if (vt0->present != RANParameter_ValueType_PR_ranP_Choice_Structure ||
+      !vt0->choice.ranP_Choice_Structure ||
+      !vt0->choice.ranP_Choice_Structure->ranParameter_Structure ||
+      !vt0->choice.ranP_Choice_Structure->ranParameter_Structure->sequence_of_ranParameters)
+    return 0;
+
+  // Level 1: STRUCTURE_Item has a pointer ranParameter_valueType.
+  auto *seq1 =
+      vt0->choice.ranP_Choice_Structure->ranParameter_Structure->sequence_of_ranParameters;
+  if (seq1->list.count == 0 || !seq1->list.array[0])
+    return 0;
+  RANParameter_STRUCTURE_Item_t *item1 = seq1->list.array[0];
+  RANParameter_ValueType_t *vt1 = item1->ranParameter_valueType;
+  if (!vt1 || vt1->present != RANParameter_ValueType_PR_ranP_Choice_Structure ||
+      !vt1->choice.ranP_Choice_Structure ||
+      !vt1->choice.ranP_Choice_Structure->ranParameter_Structure ||
+      !vt1->choice.ranP_Choice_Structure->ranParameter_Structure->sequence_of_ranParameters)
+    return 0;
+
+  // Level 2.
+  auto *seq2 =
+      vt1->choice.ranP_Choice_Structure->ranParameter_Structure->sequence_of_ranParameters;
+  if (seq2->list.count == 0 || !seq2->list.array[0])
+    return 0;
+  RANParameter_STRUCTURE_Item_t *item2 = seq2->list.array[0];
+  RANParameter_ValueType_t *vt2 = item2->ranParameter_valueType;
+  if (!vt2 || vt2->present != RANParameter_ValueType_PR_ranP_Choice_Structure ||
+      !vt2->choice.ranP_Choice_Structure ||
+      !vt2->choice.ranP_Choice_Structure->ranParameter_Structure ||
+      !vt2->choice.ranP_Choice_Structure->ranParameter_Structure->sequence_of_ranParameters)
+    return 0;
+
+  // Level 3: ElementFalse -> ranParameter_value -> valueOctS (NRCGI).
+  auto *seq3 =
+      vt2->choice.ranP_Choice_Structure->ranParameter_Structure->sequence_of_ranParameters;
+  if (seq3->list.count == 0 || !seq3->list.array[0])
+    return 0;
+  RANParameter_STRUCTURE_Item_t *item3 = seq3->list.array[0];
+  RANParameter_ValueType_t *vt3 = item3->ranParameter_valueType;
+  if (!vt3 || vt3->present != RANParameter_ValueType_PR_ranP_Choice_ElementFalse ||
+      !vt3->choice.ranP_Choice_ElementFalse ||
+      !vt3->choice.ranP_Choice_ElementFalse->ranParameter_value)
+    return 0;
+  RANParameter_Value_t *rv = vt3->choice.ranP_Choice_ElementFalse->ranParameter_value;
+  if (rv->present != RANParameter_Value_PR_valueOctS ||
+      rv->choice.valueOctS.size == 0 || !rv->choice.valueOctS.buf)
+    return 0;
+
+  // Last byte of the NRCGI encodes the ns-3 target cell ID (test convention).
+  return (uint16_t) rv->choice.valueOctS.buf[rv->choice.valueOctS.size - 1];
 }
 
 } // namespace ns3
