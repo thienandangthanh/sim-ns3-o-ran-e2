@@ -29,6 +29,8 @@
 #include <thread>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
+#include <cstdint>
 #include "encode_e2apv1.hpp"
 
 extern "C" {
@@ -230,6 +232,22 @@ void E2Termination::DoStart ()
   // with EADDRNOTAVAIL (then e2sim exit(1)s, aborting the run). m_clientPort is unique per
   // gNB (mmwave-helper: m_e2localPort + cellId); push it into e2sim's client bind.
   m_e2sim->set_client_src_port (m_clientPort);
+  //
+  // L-release multi-gNB: advertise a UNIQUE GlobalE2node gNB-ID + this gNB's served
+  // cell in the E2 Setup, so E2MGR registers each embedded mmWave gNB as a distinct
+  // ranName and a Traffic-Steering xApp can build its cell->node map. m_gnbId is the
+  // ns-3 cellId (mmwave-helper sets gnb_id = to_string(cellId)). Encode the id value
+  // as 0x16B8CE00 | cellId (top nibble 1 => stable 8-nibble hex render) and advertise
+  // the single served cell = cellId (rc decodes the NRCGI last byte back to it).
+  {
+    uint32_t cellIdForE2 = 0;
+    try { cellIdForE2 = (uint32_t) std::stoul (m_gnbId); } catch (...) { cellIdForE2 = 0; }
+    if (cellIdForE2 > 0)
+      {
+        m_e2sim->set_e2node_identity (0x16B8CE00u | (cellIdForE2 & 0xFFu),
+                                      std::vector<uint8_t> {(uint8_t) (cellIdForE2 & 0xFFu)});
+      }
+  }
   //
   // run_loop() blocks for the lifetime of this detached thread, so these locals stay alive
   // for as long as run_loop() reads them.
