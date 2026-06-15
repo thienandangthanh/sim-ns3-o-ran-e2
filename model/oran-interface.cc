@@ -75,6 +75,15 @@ static void Trampoline300 (E2AP_PDU_t *pdu) {
   auto it = g_cbMap.find (300);
   if (it != g_cbMap.end () && it->second) it->second (pdu);
 }
+/* funcId 3 = RC/Sm for the OSC TS xApp, which hardcodes RAN-Function-ID 3
+ * (ric-app-ts ts_xapp.cpp:614) in the gRPC RIC Control request that rc forwards
+ * verbatim. ns-3 also registers RC under 300 (manual grpcurl path), so both
+ * dispatch to the same control callback. (Phase 6b closed-loop demo.) */
+static void Trampoline3 (E2AP_PDU_t *pdu) {
+  std::lock_guard<std::mutex> lk (g_cbMtx);
+  auto it = g_cbMap.find (3);
+  if (it != g_cbMap.end () && it->second) it->second (pdu);
+}
 static void TrampolineFallback (E2AP_PDU_t * /*pdu*/) {
   /* no-op for unregistered function IDs */
 }
@@ -85,6 +94,7 @@ GetTrampoline (long funcId)
   switch (funcId)
     {
     case 2:   return Trampoline2;
+    case 3:   return Trampoline3;
     case 200: return Trampoline200;
     case 300: return Trampoline300;
     default:  return TrampolineFallback;
@@ -152,13 +162,14 @@ E2Termination::StoreAndRegisterCallback (long ranFunctionId, E2TermCallback cb)
     std::lock_guard<std::mutex> lk (g_cbMtx);
     g_cbMap[ranFunctionId] = std::move (cb);
   }
-  /* Only funcIds with a pre-generated trampoline (2=KPM L-release, 200=KPM
-   * Bronze legacy, 300=RC) are dispatchable; any other id registers the no-op
-   * fallback, so its callback would NEVER fire (indications silently stop).
-   * Warn loudly — if the live RIC pins KPM to a different funcId, add a
-   * TrampolineN + GetTrampoline case. (Phase-7 live run: ns-3 now registers KPM
-   * under 2 to match kpimon-go's hardcoded RANfunctionID — reconciled.) */
-  if (ranFunctionId != 2 && ranFunctionId != 200 && ranFunctionId != 300)
+  /* Only funcIds with a pre-generated trampoline (2=KPM L-release, 3=RC for the
+   * OSC TS xApp, 200=KPM Bronze legacy, 300=RC manual/grpcurl) are dispatchable;
+   * any other id registers the no-op fallback, so its callback would NEVER fire
+   * (indications silently stop). Warn loudly — if the live RIC pins KPM to a
+   * different funcId, add a TrampolineN + GetTrampoline case. (Phase-7 live run:
+   * ns-3 now registers KPM under 2 to match kpimon-go's hardcoded RANfunctionID
+   * — reconciled.) */
+  if (ranFunctionId != 2 && ranFunctionId != 3 && ranFunctionId != 200 && ranFunctionId != 300)
     {
       NS_LOG_WARN ("RegisterCallback: no trampoline for RAN function ID "
                    << ranFunctionId << " — its subscription callback will NOT "
