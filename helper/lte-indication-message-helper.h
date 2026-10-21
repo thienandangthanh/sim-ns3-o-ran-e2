@@ -45,7 +45,12 @@ public:
 
   void FillCuCpValues (uint16_t numActiveUes);
 
-  void AddCuCpUePmItem (std::string ueImsiComplete, long numDrb, long drbRelAct);
+  /**
+   * \param l3RrcMeasurementServing L3 serving-cell SINR (the value the file-logging
+   *        CSV printed); may be null
+   */
+  void AddCuCpUePmItem (std::string ueImsiComplete, long numDrb, long drbRelAct,
+                        Ptr<L3RrcMeasurements> l3RrcMeasurementServing = nullptr);
 
 private:
 };

@@ -24,34 +24,18 @@
 
 #include <ns3/indication-message-helper.h>
 
+#include <ns3/abort.h>
+
 namespace ns3 {
 
 IndicationMessageHelper::IndicationMessageHelper (IndicationMessageType type, bool isOffline,
                                                   bool reducedPmValues)
     : m_type (type), m_offline (isOffline), m_reducedPmValues (reducedPmValues)
 {
-
-  if (!m_offline)
+  m_msgValues.m_cellMeasurementItems = Create<MeasurementItemList> ();
+  if (!m_offline && type == IndicationMessageType::CuCp)
     {
-      switch (type)
-        {
-        case IndicationMessageType::CuUp:
-          m_cuUpValues = Create<OCuUpContainerValues> ();
-          break;
-
-        case IndicationMessageType::CuCp:
-          m_cuCpValues = Create<OCuCpContainerValues> ();
-          m_msgValues.m_cellObjectId = "NRCellCU";
-          break;
-
-        case IndicationMessageType::Du:
-          m_duValues = Create<ODuContainerValues> ();
-          break;
-
-        default:
-
-          break;
-        }
+      m_msgValues.m_cellObjectId = "NRCellCU";
     }
 }
 
@@ -59,16 +43,29 @@ void
 IndicationMessageHelper::FillBaseCuUpValues (std::string plmId)
 {
   NS_ABORT_MSG_IF (m_type != IndicationMessageType::CuUp, "Wrong function for this object");
-  m_cuUpValues->m_plmId = plmId;
-  m_msgValues.m_pmContainerValues = m_cuUpValues;
+  // The PLMN ID is node identity, not a measurement: the IPC sample does not carry it.
+  (void) plmId;
 }
 
 void
 IndicationMessageHelper::FillBaseCuCpValues (uint16_t numActiveUes)
 {
   NS_ABORT_MSG_IF (m_type != IndicationMessageType::CuCp, "Wrong function for this object");
-  m_cuCpValues->m_numActiveUes = numActiveUes;
-  m_msgValues.m_pmContainerValues = m_cuCpValues;
+  AddCellValue<uint16_t> ("numActiveUes", numActiveUes);
+}
+
+Ptr<MeasurementItemList>
+IndicationMessageHelper::GetUeList (const std::string &ueImsiComplete)
+{
+  auto it = m_ueLists.find (ueImsiComplete);
+  if (it != m_ueLists.end ())
+    {
+      return it->second;
+    }
+  Ptr<MeasurementItemList> ueVal = Create<MeasurementItemList> (ueImsiComplete);
+  m_ueLists.emplace (ueImsiComplete, ueVal);
+  m_msgValues.m_ueIndications.push_back (ueVal);
+  return ueVal;
 }
 
 IndicationMessageHelper::~IndicationMessageHelper ()

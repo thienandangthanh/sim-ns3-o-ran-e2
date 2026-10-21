@@ -3,58 +3,55 @@ if(HAVE_STDINT_H)
     add_definitions(-DHAVE_STDINT_H)
 endif()
 
-set(examples_as_tests_sources)
-if(${ENABLE_EXAMPLES})
-    set(examples_as_tests_sources
-        #test/oran-interface-examples-test-suite.cc
+# No asn1c / e2sim dependency: E2 runs in an out-of-process agent that ns-3
+# feeds through the ns3-e2-ipc emitter.
+
+# Commit SHAs reported in the ns3-e2-ipc hello (overridable at run time with
+# NS3_E2_IPC_NS3_SHA / NS3_E2_IPC_ORAN_INTERFACE_SHA; "unknown" if unavailable).
+find_package(Git QUIET)
+function(oran_interface_git_sha dir out_var)
+    set(sha "")
+    if(GIT_FOUND)
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} -C ${dir} rev-parse HEAD
+            OUTPUT_VARIABLE sha
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
         )
-endif()
-
-#include_directories(/usr/local/include/e2sim)
-#link_directories(/usr/local/lib)
-#link_libraries(e2sim)
-
-find_external_library(DEPENDENCY_NAME e2sim
-                      HEADER_NAME e2sim.hpp
-                      LIBRARY_NAME e2sim
-                      SEARCH_PATHS /usr/local/include/e2sim)
-
-if(!${e2sim_FOUND})
-    message(WARNING "e2sim is required by oran-interface and was not found" )
-    return ()
-endif()
-
-include_directories(${e2sim_INCLUDE_DIRS})
-message(STATUS "dirs found:  ${e2sim_INCLUDE_DIRS}" )
-message(STATUS "libraries found:  ${e2sim_LIBRARIES}" )
+    endif()
+    set(${out_var} "${sha}" PARENT_SCOPE)
+endfunction()
+oran_interface_git_sha(${PROJECT_SOURCE_DIR} E2_IPC_NS3_SHA)
+oran_interface_git_sha(${CMAKE_CURRENT_SOURCE_DIR} E2_IPC_ORAN_INTERFACE_SHA)
+message(STATUS "oran-interface: ns-3 ${E2_IPC_NS3_SHA}, oran-interface ${E2_IPC_ORAN_INTERFACE_SHA}")
+add_definitions(
+    -DE2_IPC_NS3_SHA="${E2_IPC_NS3_SHA}"
+    -DE2_IPC_ORAN_INTERFACE_SHA="${E2_IPC_ORAN_INTERFACE_SHA}"
+)
 
 build_lib(
     LIBNAME oran-interface
-    SOURCE_FILES model/oran-interface.cc
-                 helper/oran-interface-helper.cc
-                 model/asn1c-types.cc
-                 model/function-description.cc
+    SOURCE_FILES model/e2-ipc-emitter.cc
+                 model/e2-ipc-json-writer.cc
+                 model/e2-ipc-message-encoder.cc
+                 model/e2-ipc-tcp-client.cc
                  model/kpm-indication.cc
-                 model/kpm-function-description.cc
-                 model/ric-control-message.cc
-                 model/ric-control-function-description.cc
+                 model/l3-rrc-measurements.cc
                  helper/oran-interface-helper.cc
                  helper/indication-message-helper.cc
                  helper/lte-indication-message-helper.cc
                  helper/mmwave-indication-message-helper.cc
     HEADER_FILES model/oran-interface.h
-                 helper/oran-interface-helper.h
-                 model/asn1c-types.h
-                 model/function-description.h
+                 model/e2-ipc-emitter.h
+                 model/e2-ipc-json-writer.h
+                 model/e2-ipc-message-encoder.h
+                 model/e2-ipc-tcp-client.h
                  model/kpm-indication.h
-                 model/kpm-function-description.h
-                 model/ric-control-message.h
-                 model/ric-control-function-description.h
+                 model/l3-rrc-measurements.h
+                 helper/oran-interface-helper.h
                  helper/indication-message-helper.h
                  helper/lte-indication-message-helper.h
                  helper/mmwave-indication-message-helper.h
-    LIBRARIES_TO_LINK 
+    LIBRARIES_TO_LINK
                     ${libcore}
-                    ${e2sim_LIBRARIES}
 )
-

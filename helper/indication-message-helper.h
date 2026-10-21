@@ -27,8 +27,19 @@
 
 #include <ns3/kpm-indication.h>
 
+#include <map>
+
 namespace ns3 {
 
+/**
+ * Collects the values of one E2 report section (CU-UP, CU-CP or DU).
+ *
+ * The section carries the full metric set whatever reducedPmValues says:
+ * reducedPmValues only filtered what the former ASN.1 report contained, and
+ * filtering now happens downstream of the IPC emitter (it is still passed on
+ * as information). Values that only the file-logging CSV printed are added
+ * with AddCellValue / AddUeValue under their C++ field names.
+ */
 class IndicationMessageHelper : public Object
 {
 public:
@@ -45,18 +56,35 @@ public:
     return m_offline;
   }
 
+  /** Add a cell-level value that has no ASN.1 item (C++ field name as key). */
+  template <class T>
+  void
+  AddCellValue (std::string name, T value)
+  {
+    m_msgValues.m_cellMeasurementItems->AddItem<T> (std::move (name), value);
+  }
+
+  /** Add a UE-level value that has no ASN.1 item (C++ field name as key). */
+  template <class T>
+  void
+  AddUeValue (const std::string &ueImsiComplete, std::string name, T value)
+  {
+    GetUeList (ueImsiComplete)->AddItem<T> (std::move (name), value);
+  }
+
 protected:
   void FillBaseCuUpValues (std::string plmId);
 
   void FillBaseCuCpValues (uint16_t numActiveUes);
 
+  /** The value list of one UE, created on first use (one list per UE and section). */
+  Ptr<MeasurementItemList> GetUeList (const std::string &ueImsiComplete);
+
   IndicationMessageType m_type;
   bool m_offline;
-  bool m_reducedPmValues;
+  bool m_reducedPmValues; //!< informational only, see the class description
   KpmIndicationMessage::KpmIndicationMessageValues m_msgValues;
-  Ptr<OCuUpContainerValues> m_cuUpValues;
-  Ptr<OCuCpContainerValues> m_cuCpValues;
-  Ptr<ODuContainerValues> m_duValues;
+  std::map<std::string, Ptr<MeasurementItemList>> m_ueLists;
 };
 
 } // namespace ns3

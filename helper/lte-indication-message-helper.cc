@@ -40,42 +40,33 @@ LteIndicationMessageHelper::AddCuUpUePmItem (std::string ueImsiComplete, long tx
                                              long txDlPackets, double pdcpThroughput,
                                              double pdcpLatency)
 {
-  Ptr<MeasurementItemList> ueVal = Create<MeasurementItemList> (ueImsiComplete);
+  Ptr<MeasurementItemList> ueVal = GetUeList (ueImsiComplete);
 
-  if (!m_reducedPmValues)
-    {
-      // UE-specific PDCP SDU volume from LTE eNB. Unit is Mbits
-      ueVal->AddItem<long> ("DRB.PdcpSduVolumeDl_Filter.UEID", txBytes);
+  // UE-specific PDCP SDU volume from LTE eNB. Unit is Mbits
+  ueVal->AddItem<long> ("DRB.PdcpSduVolumeDl_Filter.UEID", txBytes);
 
-      // UE-specific number of PDCP SDUs from LTE eNB
-      ueVal->AddItem<long> ("Tot.PdcpSduNbrDl.UEID", txDlPackets);
+  // UE-specific number of PDCP SDUs from LTE eNB
+  ueVal->AddItem<long> ("Tot.PdcpSduNbrDl.UEID", txDlPackets);
 
-      // UE-specific Downlink IP combined EN-DC throughput from LTE eNB. Unit is kbps
-      ueVal->AddItem<double> ("DRB.PdcpSduBitRateDl.UEID", pdcpThroughput);
+  // UE-specific Downlink IP combined EN-DC throughput from LTE eNB. Unit is kbps
+  ueVal->AddItem<double> ("DRB.PdcpSduBitRateDl.UEID", pdcpThroughput);
 
-      //UE-specific Downlink IP combined EN-DC throughput from LTE eNB
-      ueVal->AddItem<double> ("DRB.PdcpSduDelayDl.UEID", pdcpLatency);
-    }
-
-  m_msgValues.m_ueIndications.insert (ueVal);
+  //UE-specific Downlink IP combined EN-DC throughput from LTE eNB
+  ueVal->AddItem<double> ("DRB.PdcpSduDelayDl.UEID", pdcpLatency);
 }
 
 void
 LteIndicationMessageHelper::AddCuUpCellPmItem (double cellAverageLatency)
 {
-  if (!m_reducedPmValues)
-    {
-      Ptr<MeasurementItemList> cellVal = Create<MeasurementItemList> ();
-      cellVal->AddItem<double> ("DRB.PdcpSduDelayDl", cellAverageLatency);
-      m_msgValues.m_cellMeasurementItems = cellVal;
-    }
+  m_msgValues.m_cellMeasurementItems->AddItem<double> ("DRB.PdcpSduDelayDl", cellAverageLatency);
 }
 
 void
 LteIndicationMessageHelper::FillCuUpValues (std::string plmId, long pdcpBytesUl, long pdcpBytesDl)
 {
-  m_cuUpValues->m_pDCPBytesUL = pdcpBytesUl;
-  m_cuUpValues->m_pDCPBytesDL = pdcpBytesDl;
+  // O-CU-UP container values
+  AddCellValue<long> ("pDCPBytesUL", pdcpBytesUl);
+  AddCellValue<long> ("pDCPBytesDL", pdcpBytesDl);
   FillBaseCuUpValues (plmId);
 }
 
@@ -87,16 +78,18 @@ LteIndicationMessageHelper::FillCuCpValues (uint16_t numActiveUes)
 
 void
 LteIndicationMessageHelper::AddCuCpUePmItem (std::string ueImsiComplete, long numDrb,
-                                             long drbRelAct)
+                                             long drbRelAct,
+                                             Ptr<L3RrcMeasurements> l3RrcMeasurementServing)
 {
 
-  Ptr<MeasurementItemList> ueVal = Create<MeasurementItemList> (ueImsiComplete);
-  if (!m_reducedPmValues)
+  Ptr<MeasurementItemList> ueVal = GetUeList (ueImsiComplete);
+  ueVal->AddItem<long> ("DRB.EstabSucc.5QI.UEID", numDrb);
+  ueVal->AddItem<long> ("DRB.RelActNbr.5QI.UEID", drbRelAct); // not modeled in the simulator
+  if (l3RrcMeasurementServing)
     {
-      ueVal->AddItem<long> ("DRB.EstabSucc.5QI.UEID", numDrb);
-      ueVal->AddItem<long> ("DRB.RelActNbr.5QI.UEID", drbRelAct); // not modeled in the simulator
+      ueVal->AddItem<Ptr<L3RrcMeasurements>> ("HO.SrcCellQual.RS-SINR.UEID",
+                                              l3RrcMeasurementServing);
     }
-  m_msgValues.m_ueIndications.insert (ueVal);
 }
 
 LteIndicationMessageHelper::~LteIndicationMessageHelper ()

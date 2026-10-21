@@ -9,7 +9,11 @@ This module has been developed by a team at the [Institute for the Wireless Inte
 
 This module can be used with an extension of the [ns3-mmWave module](https://github.com/wineslab/ns-o-ran-ns3-mmwave).
 This repository must be cloned in the `contrib` folder.
-Moreover, our custom version of the [e2sim library](https://github.com/wineslab/o-ran-e2sim) must be installed.
+This branch has no asn1c or e2sim dependency: E2 runs in an out-of-process agent (one per E2 node), and each
+E2 node streams its KPM values to its agent with an `E2IpcEmitter` (newline-delimited JSON over TCP, schema
+`ns3-e2-ipc` v1, to `E2AgentHost:(E2AgentPortBase + cellId)`, default `127.0.0.1:38470+cellId`). Every line is
+also written to `e2-ipc-trace-<cellId>.jsonl`. With `EnableE2FileLogging` the module writes the CSV files instead.
+RIC control over E2 is not available on this branch; file-based control (`ControlFileName`) is unchanged.
 Please refer to this [quick start guide](https://openrangym.com/tutorials/ns-o-ran) that presents a tutorial to bridge ns-O-RAN and Colosseum RIC (i.e., OSC RIC bronze reduced) ns-O-RAN.
 
 Additional material:
