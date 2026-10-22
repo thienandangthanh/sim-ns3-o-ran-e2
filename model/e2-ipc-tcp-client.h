@@ -48,6 +48,9 @@ public:
 
   bool IsConnected () const;
 
+  /** The socket, or -1 while not connected (the pacing barrier polls it). */
+  int GetFd () const;
+
   /** True once after each successful connect: the caller must queue its hello first. */
   bool TakeNewConnection ();
 

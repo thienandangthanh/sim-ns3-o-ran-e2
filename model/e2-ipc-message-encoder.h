@@ -26,6 +26,9 @@ struct E2IpcNodeInfo
   int64_t simStartEpochMs{0};  //!< wall-clock epoch ms mapped to sim time 0
   bool reducedPmValues{false}; //!< informational, samples carry the full set
   uint32_t maxNeigh{0};        //!< maximum L3 neighbour entries per UE
+  std::string pacing{"free"};  //!< "free" or "lockstep" (E2ControlHub Pacing)
+  double startTimeoutS{0};     //!< T_start, sent when lockstep
+  double gateTimeoutS{0};      //!< T_gate, sent when lockstep
 };
 
 /** Counters reported in bye (and logged at the end of the run). */

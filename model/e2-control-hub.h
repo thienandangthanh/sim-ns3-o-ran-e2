@@ -4,7 +4,7 @@
  *
  * Inbound E2 control path of the ns3-e2-ipc stream (v1 minor 1): RC handover
  * controls that the out-of-process agents forward, applied once per E2 period
- * and recorded in a control ledger.
+ * and recorded in a control ledger; optionally paced in lock-step (minor 2).
  */
 
 #ifndef E2_CONTROL_HUB_H
@@ -12,6 +12,8 @@
 
 #include "ns3/callback.h"
 #include "ns3/object.h"
+
+#include <ns3/e2-pacer-link.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -23,7 +25,7 @@ namespace ns3 {
 
 class E2IpcEmitter;
 
-/** One `control` line as received from an agent. */
+/** One `control` line as received from an agent (or injected by the pacer). */
 struct E2IpcControl
 {
   uint16_t viaNodeId{0};    //!< node whose agent forwarded the control
@@ -31,6 +33,7 @@ struct E2IpcControl
   uint64_t imsi{0};         //!< UE (decimal IMSI)
   uint16_t targetCellId{0}; //!< target secondary cell
   int64_t afterSeq{-1};     //!< last sample seq the agent had forwarded
+  bool fromPacer{false};    //!< injected by the pacer (scripted lock-step, replay)
 };
 
 /** What the handover handler of the master node did with one control. */
@@ -44,16 +47,29 @@ struct E2ControlResult
 /**
  * Process-wide hub between the per-node emitters and the master node.
  *
- * Emitters hand every inbound `control` line to the hub. When the last
- * registered emitter has emitted sample seq k, the hub drains every emitter
- * once more and applies the buffered controls synchronously, at the current
- * simulation time (actuation delay d = 0), in the C4 order (imsi, viaNodeId,
- * targetCellId, ctlId), through the handler registered by the LTE master
- * device. Each control gets one ledger line and one `controlAck` sent back
- * through the agent that forwarded it. Controls still buffered or arriving
- * when the emitters stop are answered `refused` with cause `late` and are
- * never applied. Without controls the hub writes nothing and schedules
+ * Emitters hand every inbound line to the hub. When the last registered
+ * emitter has emitted sample seq k, the buffered controls are applied
+ * synchronously at the current simulation time (actuation delay d = 0), in
+ * the C4 order (imsi, viaNodeId, targetCellId, ctlId), through the handler
+ * registered by the LTE master device. Each control gets one ledger line and
+ * one `controlAck`. Controls still buffered or arriving when the emitters stop
+ * are answered `refused` with cause `late` and never applied.
+ *
+ * Pacing "free" (default): the controls are applied right after the last
+ * emitter's sample k; without controls the hub writes nothing and schedules
  * nothing, so free-run output is unchanged.
+ *
+ * Pacing "lockstep" (D1): ns-3 connects to the pacer. A start barrier (seq -1)
+ * waits for every agent's `step` -1 (READY with a subscription) and the
+ * pacer's `go` -1 before the first sample; after sample k a barrier scheduled
+ * with ScheduleNow flushes every emitter, reports `ready` k to the pacer and
+ * blocks the simulation until every node has sent `step` k (or its connection
+ * is closed) and the pacer has sent `go` k, buffering every control that
+ * arrives; then the controls are applied as above. Deadlines (D2, freeze then
+ * fail): the start barrier allows StartTimeout for the agents' steps, every
+ * other barrier GateTimeout, counted only while the simulation is blocked;
+ * the pacer owns T_ctl and W and may send `abort`. Any abort, or a lost pacer
+ * link, ends the run with exit code 5 and e2-pacing-abort.json naming the step.
  */
 class E2ControlHub : public Object
 {
@@ -84,16 +100,36 @@ public:
   /** Emitter nodeId is stopping: everything still buffered is answered late. */
   void OnEmitterStopping (uint16_t nodeId);
 
+  /** "free" or "lockstep" (sent in every hello). */
+  std::string GetPacing () const;
+  double GetStartTimeoutS () const;
+  double GetGateTimeoutS () const;
+
 private:
   void Apply (uint64_t seq);
   void Answer (const E2IpcControl &c, int64_t rxSeq, int64_t rxNs, bool applied,
                const std::string &cause, uint16_t sourceCellId);
   void WriteLedger (const std::string &line);
+  void WriteLog (const std::string &line);
   void DrainAll ();
+  std::string TraceDirFile (const std::string &name) const;
+
+  // lock-step
+  void StartBarrier ();
+  void StepBarrier (uint64_t seq);
+  void Barrier (int64_t seq, double timeoutS);
+  void OnPacerLine (const std::string &line);
+  [[noreturn]] void Abort (int64_t seq, const std::string &reason);
 
   std::string m_ledgerPath;
+  std::string m_pacing;
+  std::string m_pacerHost;
+  uint16_t m_pacerPort{0};
+  double m_startTimeoutS{120};
+  double m_gateTimeoutS{10};
   std::string m_defaultTraceDir;
   std::FILE *m_ledger{nullptr};
+  std::FILE *m_log{nullptr};
   HandoverHandler m_handler;
   std::map<uint16_t, E2IpcEmitter *> m_emitters;
   std::map<uint16_t, int64_t> m_lastSeq; //!< last emitted seq per registered node
@@ -101,6 +137,14 @@ private:
   std::vector<E2IpcControl> m_buffered;
   bool m_stopping{false};
   uint64_t m_badLines{0};
+
+  E2PacerLink m_pacer;
+  bool m_startScheduled{false};
+  int64_t m_barrierSeq{-2};              //!< seq of the barrier in progress, -2 if none
+  std::map<uint16_t, int64_t> m_stepSeq; //!< last `step` seq per node
+  int64_t m_goSeq{-2};                   //!< last `go` seq from the pacer
+  std::string m_pacerAbort;              //!< reason of a pacer `abort`
+  bool m_endAck{false};                  //!< the pacer acknowledged the stop handshake
 };
 
 } // namespace ns3

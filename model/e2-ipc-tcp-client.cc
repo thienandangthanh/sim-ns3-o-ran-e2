@@ -295,6 +295,12 @@ E2IpcTcpClient::Flush (std::chrono::milliseconds timeout)
     }
 }
 
+int
+E2IpcTcpClient::GetFd () const
+{
+  return m_state == State::Connected ? m_fd : -1;
+}
+
 bool
 E2IpcTcpClient::IsConnected () const
 {

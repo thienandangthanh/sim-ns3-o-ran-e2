@@ -13,6 +13,7 @@
 #include <ns3/e2-ipc-message-encoder.h>
 #include <ns3/kpm-indication.h>
 
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -68,6 +69,14 @@ public:
 
   /** Trace and send one complete line (newline included) that is not a sample. */
   void SendLine (const std::string &line);
+
+  /** Wait up to timeout until every queued line is written (pacing barrier). */
+  void FlushOutbound (std::chrono::milliseconds timeout);
+
+  /** The agent socket, or -1 while not connected. */
+  int GetFd () const;
+
+  bool IsConnected () const;
 
 protected:
   void DoDispose () override;
