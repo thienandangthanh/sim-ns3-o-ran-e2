@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <deque>
 #include <string>
+#include <vector>
 
 namespace ns3 {
 
@@ -24,7 +25,8 @@ namespace ns3 {
  * lines still pending (including a partially sent one) are discarded and
  * counted, and a new connect is attempted after a backoff of 0.1 s doubling
  * to 5 s, measured on the monotonic (wall) clock, never on simulation time.
- * Inbound bytes are drained and ignored (ns3-e2-ipc v1).
+ * Inbound bytes are split into complete lines (at most 1 MiB each), which the
+ * emitter takes with TakeInboundLines (ns3-e2-ipc v1 minor 1: control lines).
  */
 class E2IpcTcpClient
 {
@@ -68,6 +70,9 @@ public:
 
   uint64_t GetConnectCount () const;
 
+  /** Moves the complete inbound lines received so far (newline stripped) into lines. */
+  void TakeInboundLines (std::vector<std::string> &lines);
+
 private:
   using Clock = std::chrono::steady_clock; // CLOCK_MONOTONIC
 
@@ -104,6 +109,9 @@ private:
   uint64_t m_lostSamples{0};
   uint64_t m_sentSamples{0};
   uint64_t m_connects{0};
+
+  std::string m_inBuf;                  //!< inbound bytes of the line being received
+  std::vector<std::string> m_inLines;   //!< complete inbound lines not taken yet
 };
 
 } // namespace ns3

@@ -30,6 +30,9 @@ class E2IpcTcpClient;
  * e2-ipc-trace-<nodeId>.jsonl, dropped samples included, so the trace is the
  * ground truth of what ns-3 produced. Sending never blocks simulation time:
  * while the agent is unreachable or slow, samples are dropped and counted.
+ *
+ * Inbound `control` lines (v1 minor 1) go to the E2ControlHub, which answers
+ * each with a `controlAck` sent (and traced) through this emitter.
  */
 class E2IpcEmitter : public Object
 {
@@ -59,6 +62,12 @@ public:
   void Stop ();
 
   const E2IpcCounters &GetCounters () const;
+
+  /** Advance the connection and hand every complete inbound line to the E2ControlHub. */
+  void DeliverInbound ();
+
+  /** Trace and send one complete line (newline included) that is not a sample. */
+  void SendLine (const std::string &line);
 
 protected:
   void DoDispose () override;

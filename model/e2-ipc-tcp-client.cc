@@ -29,6 +29,7 @@ constexpr std::chrono::milliseconds kMinBackoff{100};
 constexpr std::chrono::milliseconds kMaxBackoff{5000};
 constexpr std::chrono::milliseconds kConnectTimeout{5000};
 constexpr size_t kCompactThreshold = 1 << 20;
+constexpr size_t kMaxInboundLine = 1 << 20;
 } // namespace
 
 E2IpcTcpClient::E2IpcTcpClient (std::string host, uint16_t port, size_t maxPendingBytes)
@@ -148,7 +149,21 @@ E2IpcTcpClient::Drain ()
       ssize_t n = recv (m_fd, buf, sizeof (buf), MSG_DONTWAIT);
       if (n > 0)
         {
-          continue; // v1: the agent sends nothing we act on
+          m_inBuf.append (buf, static_cast<size_t> (n));
+          size_t start = 0;
+          size_t nl;
+          while ((nl = m_inBuf.find ('\n', start)) != std::string::npos)
+            {
+              m_inLines.emplace_back (m_inBuf, start, nl - start);
+              start = nl + 1;
+            }
+          m_inBuf.erase (0, start);
+          if (m_inBuf.size () > kMaxInboundLine)
+            {
+              Fail ("inbound line longer than 1 MiB", 0);
+              return;
+            }
+          continue;
         }
       if (n == 0)
         {
@@ -228,6 +243,7 @@ E2IpcTcpClient::Fail (const char *what, int err)
   m_lines.clear ();
   m_buf.clear ();
   m_off = 0;
+  m_inBuf.clear (); // a partial inbound line dies with its connection
   m_state = State::Idle;
   m_newConnection = false;
   m_nextAttempt = Clock::now () + m_backoff;
@@ -335,6 +351,16 @@ uint64_t
 E2IpcTcpClient::GetConnectCount () const
 {
   return m_connects;
+}
+
+void
+E2IpcTcpClient::TakeInboundLines (std::vector<std::string> &lines)
+{
+  for (auto &l : m_inLines)
+    {
+      lines.push_back (std::move (l));
+    }
+  m_inLines.clear ();
 }
 
 } // namespace ns3

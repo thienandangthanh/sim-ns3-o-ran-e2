@@ -33,6 +33,7 @@
  * has no asn1c or e2sim dependency.
  */
 
+#include <ns3/e2-control-hub.h>
 #include <ns3/e2-ipc-emitter.h>
 #include <ns3/kpm-indication.h>
 #include <ns3/l3-rrc-measurements.h>

@@ -162,7 +162,7 @@ EncodeE2IpcHello (const E2IpcNodeInfo &info, const std::string &runId, const std
   w.Key ("v");
   w.Int (1);
   w.Key ("minor");
-  w.Int (0);
+  w.Int (1); // 1: agent -> ns-3 `control`, ns-3 -> agent `controlAck`
   w.Key ("nodeId");
   w.Int (info.nodeId);
   w.Key ("kind");

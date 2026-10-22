@@ -8,6 +8,7 @@
 #include <ns3/e2-ipc-emitter.h>
 
 #include <ns3/abort.h>
+#include <ns3/e2-control-hub.h>
 #include <ns3/e2-ipc-tcp-client.h>
 #include <ns3/log.h>
 #include <ns3/simulator.h>
@@ -90,6 +91,7 @@ E2IpcEmitter::Start (const E2IpcNodeInfo &info)
   // One short wait so a local agent's connect completes before the first sample
   m_client->WaitConnected (std::chrono::milliseconds (200));
   m_started = true;
+  E2ControlHub::Get ()->RegisterEmitter (m_info.nodeId, this, m_traceDir);
   SendHelloIfNewConnection ();
   std::clog << "E2IPC node " << m_info.nodeId << " (" << m_info.kind << ") -> " << m_host << ":"
             << m_port << (m_client->IsConnected () ? " connected" : " not connected (will retry)")
@@ -105,9 +107,7 @@ E2IpcEmitter::EmitSample (Ptr<KpmIndicationMessage> du, Ptr<KpmIndicationMessage
 {
   NS_ABORT_MSG_IF (!m_started || m_stopped, "E2IpcEmitter of node " << m_info.nodeId
                                                                     << " is not running");
-  m_client->Service ();
-  CollectLostSamples ();
-  SendHelloIfNewConnection ();
+  DeliverInbound ();
 
   const uint64_t seq = m_counters.built++;
   const uint64_t dropped = m_counters.droppedDisconnected + m_counters.droppedBackpressure;
@@ -128,6 +128,29 @@ E2IpcEmitter::EmitSample (Ptr<KpmIndicationMessage> du, Ptr<KpmIndicationMessage
     }
   CollectLostSamples ();
   m_counters.sent = m_client->GetSentSamples ();
+  E2ControlHub::Get ()->OnSampleEmitted (m_info.nodeId, seq);
+}
+
+void
+E2IpcEmitter::DeliverInbound ()
+{
+  m_client->Service ();
+  CollectLostSamples ();
+  SendHelloIfNewConnection ();
+  std::vector<std::string> lines;
+  m_client->TakeInboundLines (lines);
+  for (const std::string &l : lines)
+    {
+      E2ControlHub::Get ()->OnInboundLine (m_info.nodeId, l);
+    }
+}
+
+void
+E2IpcEmitter::SendLine (const std::string &line)
+{
+  WriteTrace (line);
+  m_client->Enqueue (line, false);
+  CollectLostSamples ();
 }
 
 void
@@ -137,10 +160,9 @@ E2IpcEmitter::Stop ()
     {
       return;
     }
+  DeliverInbound ();
+  E2ControlHub::Get ()->OnEmitterStopping (m_info.nodeId);
   m_stopped = true;
-  m_client->Service ();
-  CollectLostSamples ();
-  SendHelloIfNewConnection ();
   m_client->Flush (std::chrono::milliseconds (2000));
   CollectLostSamples ();
   // Samples still unsent after the end-of-run flush never reach the agent

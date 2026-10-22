@@ -31,7 +31,9 @@ add_definitions(
 
 build_lib(
     LIBNAME oran-interface
-    SOURCE_FILES model/e2-ipc-emitter.cc
+    SOURCE_FILES model/e2-control-hub.cc
+                 model/e2-ipc-emitter.cc
+                 model/e2-ipc-json-reader.cc
                  model/e2-ipc-json-writer.cc
                  model/e2-ipc-message-encoder.cc
                  model/e2-ipc-tcp-client.cc
@@ -42,7 +44,9 @@ build_lib(
                  helper/lte-indication-message-helper.cc
                  helper/mmwave-indication-message-helper.cc
     HEADER_FILES model/oran-interface.h
+                 model/e2-control-hub.h
                  model/e2-ipc-emitter.h
+                 model/e2-ipc-json-reader.h
                  model/e2-ipc-json-writer.h
                  model/e2-ipc-message-encoder.h
                  model/e2-ipc-tcp-client.h
