@@ -81,6 +81,10 @@ E2IpcEmitter::Start (const E2IpcNodeInfo &info)
 {
   NS_ABORT_MSG_IF (m_started, "E2IpcEmitter started twice for node " << info.nodeId);
   m_info = info;
+  Ptr<E2ControlHub> hub = E2ControlHub::Get ();
+  m_info.pacing = hub->GetPacing ();
+  m_info.startTimeoutS = hub->GetStartTimeoutS ();
+  m_info.gateTimeoutS = hub->GetGateTimeoutS ();
   m_runId = std::to_string (info.simStartEpochMs) + "-" + std::to_string (getpid ());
   m_tracePath = (m_traceDir.empty () ? std::string () : m_traceDir + "/") + "e2-ipc-trace-" +
                 std::to_string (info.nodeId) + ".jsonl";
@@ -151,6 +155,26 @@ E2IpcEmitter::SendLine (const std::string &line)
   WriteTrace (line);
   m_client->Enqueue (line, false);
   CollectLostSamples ();
+}
+
+void
+E2IpcEmitter::FlushOutbound (std::chrono::milliseconds timeout)
+{
+  m_client->Flush (timeout);
+  CollectLostSamples ();
+  m_counters.sent = m_client->GetSentSamples ();
+}
+
+int
+E2IpcEmitter::GetFd () const
+{
+  return m_client ? m_client->GetFd () : -1;
+}
+
+bool
+E2IpcEmitter::IsConnected () const
+{
+  return m_client && m_client->IsConnected ();
 }
 
 void

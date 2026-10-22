@@ -34,6 +34,7 @@ build_lib(
     SOURCE_FILES model/e2-control-hub.cc
                  model/e2-ipc-emitter.cc
                  model/e2-ipc-json-reader.cc
+                 model/e2-pacer-link.cc
                  model/e2-ipc-json-writer.cc
                  model/e2-ipc-message-encoder.cc
                  model/e2-ipc-tcp-client.cc
@@ -47,6 +48,7 @@ build_lib(
                  model/e2-control-hub.h
                  model/e2-ipc-emitter.h
                  model/e2-ipc-json-reader.h
+                 model/e2-pacer-link.h
                  model/e2-ipc-json-writer.h
                  model/e2-ipc-message-encoder.h
                  model/e2-ipc-tcp-client.h
