@@ -48,8 +48,12 @@ MmWaveIndicationMessageHelper::AddCuUpUePmItem (std::string ueImsiComplete,
 }
 
 void
-MmWaveIndicationMessageHelper::FillCuUpValues (std::string plmId)
+MmWaveIndicationMessageHelper::FillCuUpValues (std::string plmId, long pdcpSduVolumeUl,
+                                               long pdcpSduVolumeDl)
 {
+  // O-CU-UP container values, 3GPP TS 28.552 clauses 5.1.2.1.2.1 (UL) and 5.1.2.1.1.1 (DL)
+  AddCellValue<long> ("DRB.PdcpSduVolumeUL", pdcpSduVolumeUl);
+  AddCellValue<long> ("DRB.PdcpSduVolumeDL", pdcpSduVolumeDl);
   FillBaseCuUpValues (plmId);
 }
 
