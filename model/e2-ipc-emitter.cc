@@ -95,7 +95,7 @@ E2IpcEmitter::Start (const E2IpcNodeInfo &info)
   // One short wait so a local agent's connect completes before the first sample
   m_client->WaitConnected (std::chrono::milliseconds (200));
   m_started = true;
-  E2ControlHub::Get ()->RegisterEmitter (m_info.nodeId, this, m_traceDir);
+  E2ControlHub::Get ()->RegisterEmitter (m_info.nodeId, this, m_traceDir, m_info.periodNs);
   SendHelloIfNewConnection ();
   std::clog << "E2IPC node " << m_info.nodeId << " (" << m_info.kind << ") -> " << m_host << ":"
             << m_port << (m_client->IsConnected () ? " connected" : " not connected (will retry)")

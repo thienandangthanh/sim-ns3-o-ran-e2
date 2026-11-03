@@ -13,6 +13,7 @@
 #include <ns3/e2-ipc-json-reader.h>
 #include <ns3/e2-ipc-json-writer.h>
 #include <ns3/log.h>
+#include <ns3/nstime.h>
 #include <ns3/simulator.h>
 #include <ns3/string.h>
 #include <ns3/uinteger.h>
@@ -64,7 +65,13 @@ E2ControlHub::GetTypeId ()
           .AddAttribute ("GateTimeout",
                          "T_gate (s): every other barrier's wait for every agent's step k",
                          DoubleValue (10), MakeDoubleAccessor (&E2ControlHub::m_gateTimeoutS),
-                         MakeDoubleChecker<double> (0));
+                         MakeDoubleChecker<double> (0))
+          .AddAttribute ("ActuationDelay",
+                         "δ: sim time from the barrier that decides a control to its apply "
+                         "(precheck, handover, ledger line, controlAck); a model parameter, "
+                         "0 applies synchronously at the barrier",
+                         TimeValue (Seconds (0)), MakeTimeAccessor (&E2ControlHub::m_actuationDelay),
+                         MakeTimeChecker (Seconds (0)));
   return tid;
 }
 
@@ -119,10 +126,16 @@ E2ControlHub::SetHandoverHandler (HandoverHandler handler)
 }
 
 void
-E2ControlHub::RegisterEmitter (uint16_t nodeId, E2IpcEmitter *emitter, const std::string &traceDir)
+E2ControlHub::RegisterEmitter (uint16_t nodeId, E2IpcEmitter *emitter, const std::string &traceDir,
+                               int64_t periodNs)
 {
   NS_ABORT_MSG_IF (m_pacing != "free" && m_pacing != "lockstep",
                    "ns3::E2ControlHub::Pacing must be free or lockstep, not " << m_pacing);
+  NS_ABORT_MSG_IF (m_periodNs != 0 && periodNs != m_periodNs,
+                   "E2 emitters with different periods: " << m_periodNs << " and " << periodNs);
+  NS_ABORT_MSG_IF (m_actuationDelay.GetNanoSeconds () % 1000000 != 0,
+                   "ns3::E2ControlHub::ActuationDelay must be whole milliseconds");
+  m_periodNs = periodNs;
   if (m_emitters.empty ())
     {
       m_defaultTraceDir = traceDir;
@@ -182,7 +195,8 @@ E2ControlHub::OnInboundLine (uint16_t viaNodeId, const std::string &line)
   c.afterSeq = r.HasInt ("afterSeq") ? r.GetInt ("afterSeq") : -1;
   if (m_stopping)
     {
-      Answer (c, m_appliedSeq, Simulator::Now ().GetNanoSeconds (), false, "late", 0);
+      const int64_t now = Simulator::Now ().GetNanoSeconds ();
+      Answer (c, m_appliedSeq, now, now, false, "late", 0);
       return;
     }
   m_buffered.push_back (c);
@@ -243,6 +257,7 @@ void
 E2ControlHub::Apply (uint64_t seq)
 {
   m_appliedSeq = static_cast<int64_t> (seq);
+  ApplyDue (m_appliedSeq); // batches decided n periods ago (δ = n·T) go before this barrier's own
   std::vector<E2IpcControl> batch;
   batch.swap (m_buffered);
   std::sort (batch.begin (), batch.end (), [] (const E2IpcControl &a, const E2IpcControl &b) {
@@ -250,21 +265,31 @@ E2ControlHub::Apply (uint64_t seq)
            std::tie (b.imsi, b.viaNodeId, b.targetCellId, b.ctlId);
   });
   const int64_t now = Simulator::Now ().GetNanoSeconds ();
+  const bool synchronous = m_actuationDelay.IsZero ();
   uint64_t late = 0;
+  std::vector<E2IpcControl> deferred;
   for (const E2IpcControl &c : batch)
     {
       if (m_pacing == "lockstep" && c.afterSeq < static_cast<int64_t> (seq))
         {
           // Lock-step applies a control at the barrier of its afterSeq; one that
           // reaches a later barrier missed its own and is refused, never applied
-          Answer (c, m_appliedSeq, now, false, "late", 0);
+          Answer (c, m_appliedSeq, now, now, false, "late", 0);
           late++;
           continue;
         }
-      NS_ABORT_MSG_IF (m_handler.IsNull (),
-                       "E2 control received but no master node registered a handover handler");
-      E2ControlResult res = m_handler (c.imsi, c.targetCellId);
-      Answer (c, m_appliedSeq, now, res.applied, res.applied ? "" : res.cause, res.sourceCellId);
+      if (synchronous)
+        {
+          ApplyOne (c, m_appliedSeq, now);
+        }
+      else
+        {
+          deferred.push_back (c);
+        }
+    }
+  if (!deferred.empty ())
+    {
+      Defer (std::move (deferred), m_appliedSeq, now);
     }
   if (m_pacer.IsOpen ())
     {
@@ -275,7 +300,69 @@ E2ControlHub::Apply (uint64_t seq)
 }
 
 void
-E2ControlHub::Answer (const E2IpcControl &c, int64_t rxSeq, int64_t rxNs, bool applied,
+E2ControlHub::ApplyOne (const E2IpcControl &c, int64_t rxSeq, int64_t rxNs)
+{
+  NS_ABORT_MSG_IF (m_handler.IsNull (),
+                   "E2 control received but no master node registered a handover handler");
+  E2ControlResult res = m_handler (c.imsi, c.targetCellId);
+  Answer (c, rxSeq, rxNs, Simulator::Now ().GetNanoSeconds (), res.applied,
+          res.applied ? "" : res.cause, res.sourceCellId);
+}
+
+void
+E2ControlHub::Defer (std::vector<E2IpcControl> controls, int64_t rxSeq, int64_t rxNs)
+{
+  const int64_t delayNs = m_actuationDelay.GetNanoSeconds ();
+  PendingBatch b;
+  b.controls = std::move (controls);
+  b.rxSeq = rxSeq;
+  b.rxNs = rxNs;
+  if (m_periodNs > 0 && delayNs % m_periodNs == 0)
+    {
+      // δ = n·T: applied at barrier k + n, never through a same-timestamp event
+      m_dueAtSeq[rxSeq + delayNs / m_periodNs].push_back (std::move (b));
+      return;
+    }
+  const uint64_t id = m_nextBatchId++;
+  b.event = Simulator::Schedule (m_actuationDelay, &E2ControlHub::ApplyScheduled, this, id);
+  m_scheduled.emplace (id, std::move (b));
+}
+
+void
+E2ControlHub::ApplyDue (int64_t seq)
+{
+  auto it = m_dueAtSeq.find (seq);
+  if (it == m_dueAtSeq.end ())
+    {
+      return;
+    }
+  std::vector<PendingBatch> due;
+  due.swap (it->second);
+  m_dueAtSeq.erase (it);
+  for (const PendingBatch &b : due)
+    {
+      for (const E2IpcControl &c : b.controls)
+        {
+          ApplyOne (c, b.rxSeq, b.rxNs);
+        }
+    }
+}
+
+void
+E2ControlHub::ApplyScheduled (uint64_t id)
+{
+  auto it = m_scheduled.find (id);
+  NS_ASSERT (it != m_scheduled.end ());
+  PendingBatch b = std::move (it->second);
+  m_scheduled.erase (it);
+  for (const E2IpcControl &c : b.controls)
+    {
+      ApplyOne (c, b.rxSeq, b.rxNs);
+    }
+}
+
+void
+E2ControlHub::Answer (const E2IpcControl &c, int64_t rxSeq, int64_t rxNs, int64_t applyNs, bool applied,
                       const std::string &cause, uint16_t sourceCellId)
 {
   E2IpcJsonWriter l;
@@ -285,7 +372,7 @@ E2ControlHub::Answer (const E2IpcControl &c, int64_t rxSeq, int64_t rxNs, bool a
   l.Key ("rxSimTimeNs");
   l.Int (rxNs);
   l.Key ("applySimTimeNs");
-  l.Int (rxNs); // d = 0: a control applies at the period boundary it is received at
+  l.Int (applyNs); // rxNs + δ for an applied control; equal to rxNs at δ = 0
   l.Key ("viaNodeId");
   l.Int (c.viaNodeId);
   l.Key ("ctlId");
@@ -322,7 +409,7 @@ E2ControlHub::Answer (const E2IpcControl &c, int64_t rxSeq, int64_t rxNs, bool a
   a.Key ("seq");
   a.Int (rxSeq);
   a.Key ("applySimTimeNs");
-  a.Int (rxNs);
+  a.Int (applyNs);
   a.Key ("sourceCellId");
   a.Int (sourceCellId);
   a.EndObject ();
@@ -352,8 +439,8 @@ E2ControlHub::WriteLedger (const std::string &line)
       std::string path = m_ledgerPath.empty () ? TraceDirFile ("e2-control-ledger.jsonl") : m_ledgerPath;
       m_ledger = std::fopen (path.c_str (), "w");
       NS_ABORT_MSG_IF (m_ledger == nullptr, "Can't open file " << path);
-      const std::string header =
-          "{\"type\":\"ledgerHeader\",\"v\":1,\"delta-model\":\"fixed 0\"}\n";
+      const std::string header = "{\"type\":\"ledgerHeader\",\"v\":1,\"delta-model\":\"fixed " +
+                                 std::to_string (m_actuationDelay.GetNanoSeconds () / 1000000) + "\"}\n";
       std::fwrite (header.data (), 1, header.size (), m_ledger);
     }
   if (std::fwrite (line.data (), 1, line.size (), m_ledger) != line.size () ||
@@ -386,9 +473,30 @@ E2ControlHub::OnEmitterStopping (uint16_t nodeId)
       std::vector<E2IpcControl> batch;
       batch.swap (m_buffered);
       const int64_t now = Simulator::Now ().GetNanoSeconds ();
+      // controls decided earlier and still waiting for their apply: one FAILURE each, oldest first
+      for (auto &kv : m_scheduled)
+        {
+          Simulator::Cancel (kv.second.event);
+          for (const E2IpcControl &c : kv.second.controls)
+            {
+              Answer (c, kv.second.rxSeq, kv.second.rxNs, now, false, "late", 0);
+            }
+        }
+      m_scheduled.clear ();
+      for (const auto &kv : m_dueAtSeq)
+        {
+          for (const PendingBatch &b : kv.second)
+            {
+              for (const E2IpcControl &c : b.controls)
+                {
+                  Answer (c, b.rxSeq, b.rxNs, now, false, "late", 0);
+                }
+            }
+        }
+      m_dueAtSeq.clear ();
       for (const E2IpcControl &c : batch)
         {
-          Answer (c, m_appliedSeq, now, false, "late", 0);
+          Answer (c, m_appliedSeq, now, now, false, "late", 0);
         }
       if (m_pacer.IsOpen ())
         {
@@ -561,7 +669,8 @@ E2ControlHub::OnPacerLine (const std::string &line)
       c.fromPacer = true;
       if (m_stopping)
         {
-          Answer (c, m_appliedSeq, Simulator::Now ().GetNanoSeconds (), false, "late", 0);
+          const int64_t now = Simulator::Now ().GetNanoSeconds ();
+          Answer (c, m_appliedSeq, now, now, false, "late", 0);
         }
       else
         {

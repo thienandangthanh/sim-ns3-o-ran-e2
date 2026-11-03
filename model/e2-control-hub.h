@@ -11,6 +11,8 @@
 #define E2_CONTROL_HUB_H
 
 #include "ns3/callback.h"
+#include "ns3/event-id.h"
+#include "ns3/nstime.h"
 #include "ns3/object.h"
 
 #include <ns3/e2-pacer-link.h>
@@ -49,12 +51,16 @@ struct E2ControlResult
  * Process-wide hub between the per-node emitters and the master node.
  *
  * Emitters hand every inbound line to the hub. When the last registered
- * emitter has emitted sample seq k, the buffered controls are applied
- * synchronously at the current simulation time (actuation delay d = 0), in
- * the order (imsi, viaNodeId, targetCellId, ctlId), through the handler
- * registered by the LTE master device. Each control gets one ledger line and
- * one `controlAck`. Controls still buffered or arriving when the emitters stop
- * are answered `refused` with cause `late` and never applied.
+ * emitter has emitted sample seq k, the buffered controls are decided at that
+ * barrier, in the order (imsi, viaNodeId, targetCellId, ctlId), and applied
+ * through the handler registered by the LTE master device ActuationDelay (δ,
+ * sim time) later: at δ = 0 synchronously at the barrier (no event, so ties
+ * cannot reorder); when δ is a multiple of the E2 period T, at barrier
+ * k + δ/T, after that seq's samples and before that barrier's own batch;
+ * otherwise in one event at t_k + δ. The precheck, the handover, the ledger
+ * line and the `controlAck` of a control happen together at apply time. A
+ * control still buffered or pending, or arriving, when the emitters stop is
+ * answered `refused` with cause `late` once and never applied.
  *
  * Pacing "free" (default): the controls are applied right after the last
  * emitter's sample k; without controls the hub writes nothing and schedules
@@ -94,7 +100,8 @@ public:
   void SetHandoverHandler (HandoverHandler handler);
 
   /** Called by every emitter in Start. traceDir is the emitter's trace directory. */
-  void RegisterEmitter (uint16_t nodeId, E2IpcEmitter *emitter, const std::string &traceDir);
+  void RegisterEmitter (uint16_t nodeId, E2IpcEmitter *emitter, const std::string &traceDir,
+                        int64_t periodNs);
 
   /** An inbound line received from the agent of viaNodeId. */
   void OnInboundLine (uint16_t viaNodeId, const std::string &line);
@@ -111,8 +118,21 @@ public:
   double GetGateTimeoutS () const;
 
 private:
+  /** Controls decided at barrier rxSeq (sim time rxNs) whose apply is pending. */
+  struct PendingBatch
+  {
+    std::vector<E2IpcControl> controls;
+    int64_t rxSeq{-1};
+    int64_t rxNs{0};
+    EventId event; //!< set only for an event-scheduled batch (δ not a multiple of T)
+  };
+
   void Apply (uint64_t seq);
-  void Answer (const E2IpcControl &c, int64_t rxSeq, int64_t rxNs, bool applied,
+  void ApplyOne (const E2IpcControl &c, int64_t rxSeq, int64_t rxNs);
+  void ApplyDue (int64_t seq);
+  void ApplyScheduled (uint64_t id);
+  void Defer (std::vector<E2IpcControl> controls, int64_t rxSeq, int64_t rxNs);
+  void Answer (const E2IpcControl &c, int64_t rxSeq, int64_t rxNs, int64_t applyNs, bool applied,
                const std::string &cause, uint16_t sourceCellId);
   void WriteLedger (const std::string &line);
   void WriteLog (const std::string &line);
@@ -140,6 +160,11 @@ private:
   std::map<uint16_t, int64_t> m_lastSeq; //!< last emitted seq per registered node
   int64_t m_appliedSeq{-1};              //!< last seq whose controls were applied
   std::vector<E2IpcControl> m_buffered;
+  Time m_actuationDelay{0};                     //!< δ (ActuationDelay)
+  int64_t m_periodNs{0};                        //!< E2 period T of the registered emitters
+  std::map<int64_t, std::vector<PendingBatch>> m_dueAtSeq; //!< δ = n·T: batches due at barrier seq
+  std::map<uint64_t, PendingBatch> m_scheduled; //!< other δ: event-scheduled batches by id
+  uint64_t m_nextBatchId{0};
   bool m_stopping{false};
   uint64_t m_badLines{0};
 
