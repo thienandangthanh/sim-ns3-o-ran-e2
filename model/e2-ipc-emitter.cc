@@ -219,7 +219,12 @@ E2IpcEmitter::Stop ()
     {
       return;
     }
-  DeliverInbound ();
+  // Once the hub is stopping (an earlier emitter stopped), a line not read yet stays
+  // unread: the agent answers its control at bye, which ns-3 never saw
+  if (!E2ControlHub::Get ()->IsStopping ())
+    {
+      DeliverInbound ();
+    }
   E2ControlHub::Get ()->OnEmitterStopping (m_info.nodeId);
   m_stopped = true;
   m_client->Flush (std::chrono::milliseconds (2000));

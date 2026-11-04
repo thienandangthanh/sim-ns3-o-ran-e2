@@ -70,7 +70,10 @@ public:
   void EmitSample (Ptr<KpmIndicationMessage> du, Ptr<KpmIndicationMessage> cuUp,
                    Ptr<KpmIndicationMessage> cuCp, std::vector<E2IpcUeContext> ueContexts);
 
-  /** Flush, send bye, log the counters and close. Idempotent. */
+  /**
+   * Flush, send bye, log the counters and close. Idempotent. Inbound lines are
+   * read first only while the hub is not stopping yet.
+   */
   void Stop ();
 
   const E2IpcCounters &GetCounters () const;
