@@ -2,7 +2,7 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only
  *
- * Encoders for the ns3-e2-ipc v1 messages (hello, sample, bye).
+ * Encoders for the ns3-e2-ipc v1 messages (hello, sample, ueContext, bye).
  */
 
 #include <ns3/e2-ipc-message-encoder.h>
@@ -10,6 +10,7 @@
 #include <ns3/abort.h>
 #include <ns3/e2-ipc-json-writer.h>
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <map>
@@ -162,7 +163,7 @@ EncodeE2IpcHello (const E2IpcNodeInfo &info, const std::string &runId, const std
   w.Key ("v");
   w.Int (1);
   w.Key ("minor");
-  w.Int (2); // 1: `control` / `controlAck`; 2: `pacing`, `step` and the barrier deadlines
+  w.Int (3); // 1: `control` / `controlAck`; 2: `pacing`, `step` and the barrier deadlines; 3: `ueContext`
   w.Key ("nodeId");
   w.Int (info.nodeId);
   w.Key ("kind");
@@ -238,6 +239,40 @@ EncodeE2IpcSample (uint16_t nodeId, uint64_t seq, int64_t simTimeNs, uint64_t ip
       WriteSection (w, "du", ue.second.du);
       WriteSection (w, "cuUp", ue.second.cuUp);
       WriteSection (w, "cuCp", ue.second.cuCp);
+      w.EndObject ();
+    }
+  w.EndArray ();
+  w.EndObject ();
+  return w.Str ();
+}
+
+std::string
+EncodeE2IpcUeContext (uint16_t nodeId, uint64_t seq, std::vector<E2IpcUeContext> ues)
+{
+  std::sort (ues.begin (), ues.end ());
+  E2IpcJsonWriter w;
+  w.BeginObject ();
+  w.Key ("type");
+  w.String ("ueContext");
+  w.Key ("v");
+  w.Int (1);
+  w.Key ("nodeId");
+  w.Int (nodeId);
+  w.Key ("seq");
+  w.UInt (seq);
+  w.Key ("ues");
+  w.BeginArray ();
+  for (const auto &ue : ues)
+    {
+      w.BeginObject ();
+      w.Key ("imsi");
+      w.UInt (ue.imsi);
+      w.Key ("lteRnti");
+      w.Int (ue.lteRnti);
+      w.Key ("mnCellId");
+      w.Int (ue.mnCellId);
+      w.Key ("mmeUeS1apId");
+      w.UInt (ue.mmeUeS1apId);
       w.EndObject ();
     }
   w.EndArray ();

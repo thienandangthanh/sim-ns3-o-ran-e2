@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace ns3 {
 
@@ -34,6 +35,12 @@ class E2IpcTcpClient;
  *
  * Inbound `control` lines (v1 minor 1) go to the E2ControlHub, which answers
  * each with a `controlAck` sent (and traced) through this emitter.
+ *
+ * Before a sample, a `ueContext` line carries the node's UE contexts whenever
+ * they differ from the last line sent, at the first sample, after every new
+ * connection and after a line the pending buffer refused. ueContext lines are
+ * written to e2-ue-context-<nodeId>.jsonl, never to the IPC trace, so the
+ * trace and its samples do not depend on them.
  */
 class E2IpcEmitter : public Object
 {
@@ -55,9 +62,13 @@ public:
   /** Open the trace and connect to the agent. Called once, at simulation start. */
   void Start (const E2IpcNodeInfo &info);
 
-  /** Build, trace and send one sample at the current simulation time. */
+  /**
+   * Build, trace and send one sample at the current simulation time, preceded
+   * by a ueContext line when ueContexts (the node's UE contexts read right
+   * before this sample, in any order) need one.
+   */
   void EmitSample (Ptr<KpmIndicationMessage> du, Ptr<KpmIndicationMessage> cuUp,
-                   Ptr<KpmIndicationMessage> cuCp);
+                   Ptr<KpmIndicationMessage> cuCp, std::vector<E2IpcUeContext> ueContexts);
 
   /** Flush, send bye, log the counters and close. Idempotent. */
   void Stop ();
@@ -69,6 +80,12 @@ public:
 
   /** Trace and send one complete line (newline included) that is not a sample. */
   void SendLine (const std::string &line);
+
+  /**
+   * Write one complete ueContext line (newline included) to the UE context
+   * file and send it; never written to the IPC trace.
+   */
+  void SendUeContext (const std::string &line);
 
   /** Wait up to timeout until every queued line is written (pacing barrier). */
   void FlushOutbound (std::chrono::milliseconds timeout);
@@ -83,6 +100,7 @@ protected:
 
 private:
   void WriteTrace (const std::string &line);
+  void WriteUeContextFile (const std::string &line);
   void SendHelloIfNewConnection ();
   void CollectLostSamples ();
 
@@ -94,6 +112,12 @@ private:
   std::string m_runId;
   std::unique_ptr<E2IpcTcpClient> m_client;
   std::FILE *m_trace{nullptr};
+  std::string m_ueContextPath;
+  std::FILE *m_ueContextFile{nullptr};
+  std::vector<E2IpcUeContext> m_lastUeContexts; //!< sorted, as last sent
+  bool m_ueContextSent{false};                  //!< a ueContext line was sent
+  bool m_ueContextRefused{false};               //!< the last one hit backpressure
+  uint64_t m_ueContextConnects{0};              //!< connect count when it was sent
   E2IpcCounters m_counters;
   bool m_started{false};
   bool m_stopped{false};

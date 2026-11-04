@@ -13,6 +13,7 @@
 #include <ns3/log.h>
 #include <ns3/simulator.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <unistd.h>
@@ -86,10 +87,13 @@ E2IpcEmitter::Start (const E2IpcNodeInfo &info)
   m_info.startTimeoutS = hub->GetStartTimeoutS ();
   m_info.gateTimeoutS = hub->GetGateTimeoutS ();
   m_runId = std::to_string (info.simStartEpochMs) + "-" + std::to_string (getpid ());
-  m_tracePath = (m_traceDir.empty () ? std::string () : m_traceDir + "/") + "e2-ipc-trace-" +
-                std::to_string (info.nodeId) + ".jsonl";
+  const std::string dirPrefix = m_traceDir.empty () ? std::string () : m_traceDir + "/";
+  m_tracePath = dirPrefix + "e2-ipc-trace-" + std::to_string (info.nodeId) + ".jsonl";
   m_trace = std::fopen (m_tracePath.c_str (), "w");
   NS_ABORT_MSG_IF (m_trace == nullptr, "Can't open file " << m_tracePath);
+  m_ueContextPath = dirPrefix + "e2-ue-context-" + std::to_string (info.nodeId) + ".jsonl";
+  m_ueContextFile = std::fopen (m_ueContextPath.c_str (), "w");
+  NS_ABORT_MSG_IF (m_ueContextFile == nullptr, "Can't open file " << m_ueContextPath);
 
   m_client = std::make_unique<E2IpcTcpClient> (m_host, m_port, MAX_PENDING_BYTES);
   // One short wait so a local agent's connect completes before the first sample
@@ -107,11 +111,23 @@ E2IpcEmitter::Start (const E2IpcNodeInfo &info)
 
 void
 E2IpcEmitter::EmitSample (Ptr<KpmIndicationMessage> du, Ptr<KpmIndicationMessage> cuUp,
-                          Ptr<KpmIndicationMessage> cuCp)
+                          Ptr<KpmIndicationMessage> cuCp, std::vector<E2IpcUeContext> ueContexts)
 {
   NS_ABORT_MSG_IF (!m_started || m_stopped, "E2IpcEmitter of node " << m_info.nodeId
                                                                     << " is not running");
   DeliverInbound ();
+
+  // After DeliverInbound, so a new connection's hello goes first. The agent of a new
+  // connection has no context yet, and one the pending buffer refused never reached it.
+  std::sort (ueContexts.begin (), ueContexts.end ());
+  if (!m_ueContextSent || m_ueContextRefused || ueContexts != m_lastUeContexts ||
+      m_client->GetConnectCount () != m_ueContextConnects)
+    {
+      m_lastUeContexts = std::move (ueContexts);
+      // Its seq is the one of the sample that follows
+      SendUeContext (EncodeE2IpcUeContext (m_info.nodeId, m_counters.built, m_lastUeContexts) +
+                     "\n");
+    }
 
   const uint64_t seq = m_counters.built++;
   const uint64_t dropped = m_counters.droppedDisconnected + m_counters.droppedBackpressure;
@@ -154,6 +170,25 @@ E2IpcEmitter::SendLine (const std::string &line)
 {
   WriteTrace (line);
   m_client->Enqueue (line, false);
+  CollectLostSamples ();
+}
+
+void
+E2IpcEmitter::SendUeContext (const std::string &line)
+{
+  NS_ABORT_MSG_IF (!m_started || m_stopped, "E2IpcEmitter of node " << m_info.nodeId
+                                                                    << " is not running");
+  WriteUeContextFile (line);
+  const E2IpcTcpClient::EnqueueResult res = m_client->Enqueue (line, false);
+  // A line lost while disconnected is sent again after the next connect (connect count)
+  m_ueContextSent = true;
+  m_ueContextRefused = res == E2IpcTcpClient::EnqueueResult::Backpressure;
+  m_ueContextConnects = m_client->GetConnectCount ();
+  if (m_ueContextRefused)
+    {
+      NS_LOG_WARN ("Node " << m_info.nodeId << ": ueContext refused by backpressure, retried "
+                                               "before the next sample");
+    }
   CollectLostSamples ();
 }
 
@@ -210,6 +245,8 @@ E2IpcEmitter::Stop ()
   m_client.reset ();
   std::fclose (m_trace);
   m_trace = nullptr;
+  std::fclose (m_ueContextFile);
+  m_ueContextFile = nullptr;
 }
 
 const E2IpcCounters &
@@ -232,6 +269,16 @@ E2IpcEmitter::WriteTrace (const std::string &line)
       std::fflush (m_trace) != 0)
     {
       NS_FATAL_ERROR ("Can't write file " << m_tracePath);
+    }
+}
+
+void
+E2IpcEmitter::WriteUeContextFile (const std::string &line)
+{
+  if (std::fwrite (line.data (), 1, line.size (), m_ueContextFile) != line.size () ||
+      std::fflush (m_ueContextFile) != 0)
+    {
+      NS_FATAL_ERROR ("Can't write file " << m_ueContextPath);
     }
 }
 
