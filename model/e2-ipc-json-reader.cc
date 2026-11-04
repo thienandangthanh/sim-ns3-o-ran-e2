@@ -270,6 +270,7 @@ E2IpcJsonReader::ParseValue (int level, const std::string &parent, const std::st
           m_depth--;
           return true;
         }
+      std::set<std::string> names; // this object's member names
       while (true)
         {
           std::string member;
@@ -277,6 +278,12 @@ E2IpcJsonReader::ParseValue (int level, const std::string &parent, const std::st
             {
               SkipSpace ();
               if (!ParseString (member))
+                {
+                  return false;
+                }
+              // A repeated member name, at any level, makes the line malformed: no
+              // value of a repeated member may be kept, merged or overwritten
+              if (!names.insert (member).second)
                 {
                   return false;
                 }

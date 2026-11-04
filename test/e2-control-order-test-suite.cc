@@ -73,6 +73,7 @@ public:
   E2ControlResult
   Apply (uint64_t imsi, uint32_t mnCellId, uint16_t targetCellId)
   {
+    m_calls++;
     E2ControlResult res;
     FakeUe &ue = m_ran.ues.at (imsi);
     res.sourceCellId = ue.servingCell;
@@ -100,6 +101,13 @@ public:
     return res;
   }
 
+  /** Controls this node was asked to execute. */
+  int
+  GetCalls () const
+  {
+    return m_calls;
+  }
+
   void
   Register (Ptr<E2ControlHub> hub)
   {
@@ -110,6 +118,7 @@ public:
 private:
   FakeRan &m_ran;
   uint16_t m_cell;
+  int m_calls{0};
 };
 
 /** Runs a test body in a fresh temporary directory; restores the working directory. */
@@ -200,6 +209,16 @@ ControlLine (uint16_t nodeId, uint64_t ctlId, uint16_t x2apId, uint32_t mnCellId
          std::to_string (x2apId) + ",\"mnCellId\":" + std::to_string (mnCellId) +
          "},\"targetCellId\":" + std::to_string (targetCellId) +
          ",\"afterSeq\":" + std::to_string (afterSeq) + ",\"diag\":{\"rxUnixMs\":1}}";
+}
+
+/** text with its one occurrence of from replaced by to (a fixture edit). */
+std::string
+Replaced (std::string text, const std::string &from, const std::string &to)
+{
+  size_t at = text.find (from);
+  NS_ABORT_MSG_IF (at == std::string::npos || text.find (from, at + 1) != std::string::npos,
+                   "fixture: " << from);
+  return text.replace (at, from.size (), to);
 }
 
 /** The pacing-log record of an inbound control. */
@@ -551,6 +570,51 @@ private:
   }
 };
 
+/**
+ * A control line that repeats a member name in one object is malformed: the
+ * reader rejects it before keeping any value, so its parts are never merged
+ * into a control. No execution, no ledger line, no pacing record.
+ */
+class E2ControlRepeatedMemberTestCase : public TestCase
+{
+public:
+  E2ControlRepeatedMemberTestCase (const std::string &what, const std::string &line)
+      : TestCase ("a control line with a repeated member is malformed: " + what),
+        m_line (line)
+  {
+  }
+
+private:
+  void
+  DoRun () override
+  {
+    // EXPECT, not ASSERT: every check is reported, so a reader that let the line
+    // through shows that it was executed and recorded
+    E2IpcJsonReader r;
+    NS_TEST_EXPECT_MSG_EQ (r.Parse (m_line), false, "the reader rejects " << m_line);
+    TempWorkDir dir;
+    FakeRan ran = ScenarioRan ();
+    FakeEnGnb gnb3 (ran, 3);
+    Ptr<E2ControlHub> hub = CreateObject<E2ControlHub> ();
+    gnb3.Register (hub);
+    hub->OnInboundLine (3, m_line);
+    hub->OnSampleEmitted (3, 5);
+    NS_TEST_EXPECT_MSG_EQ (gnb3.GetCalls (), 0, "not executed");
+    NS_TEST_EXPECT_MSG_EQ (ReadLedger ().size (), 0u, "no ledger line");
+    NS_TEST_EXPECT_MSG_EQ (PacingControlRecords ().size (), 0u, "no pacing record");
+    Simulator::Destroy ();
+  }
+
+  std::string m_line;
+};
+
+/** The binding line of the repeated-member cases: IMSI 2 through its source 3, to cell 2. */
+std::string
+RepeatedMemberBase ()
+{
+  return ControlLine (3, 9, 4, 1, 2, 5);
+}
+
 class E2ControlOrderTestSuite : public TestSuite
 {
 public:
@@ -563,6 +627,30 @@ public:
     AddTestCase (new E2ControlResolutionTestCase (), TestCase::QUICK);
     AddTestCase (new E2ControlLineFormTestCase (), TestCase::QUICK);
     AddTestCase (new E2ControlDeferredResolutionTestCase (), TestCase::QUICK);
+    const std::string base = RepeatedMemberBase ();
+    const std::string ueId = "\"ueId\":{\"mEnbUeX2apId\":4,\"mnCellId\":1}";
+    AddTestCase (new E2ControlRepeatedMemberTestCase (
+                     "ueId split over two objects",
+                     Replaced (base, ueId,
+                               "\"ueId\":{\"mEnbUeX2apId\":4},\"ueId\":{\"mnCellId\":1}")),
+                 TestCase::QUICK);
+    AddTestCase (new E2ControlRepeatedMemberTestCase (
+                     "style repeated as a string",
+                     Replaced (base, "\"style\":5", "\"style\":5,\"style\":\"3\"")),
+                 TestCase::QUICK);
+    AddTestCase (new E2ControlRepeatedMemberTestCase (
+                     "action repeated as a string",
+                     Replaced (base, "\"action\":3", "\"action\":3,\"action\":\"1\"")),
+                 TestCase::QUICK);
+    AddTestCase (new E2ControlRepeatedMemberTestCase (
+                     "ctlId repeated at the top level",
+                     Replaced (base, "\"targetCellId\"", "\"ctlId\":10,\"targetCellId\"")),
+                 TestCase::QUICK);
+    AddTestCase (new E2ControlRepeatedMemberTestCase (
+                     "X2AP ID repeated inside ueId",
+                     Replaced (base, ueId,
+                               "\"ueId\":{\"mEnbUeX2apId\":6,\"mEnbUeX2apId\":4,\"mnCellId\":1}")),
+                 TestCase::QUICK);
   }
 };
 

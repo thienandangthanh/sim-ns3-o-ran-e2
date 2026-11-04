@@ -25,7 +25,10 @@ namespace ns3 {
 class E2IpcJsonReader
 {
 public:
-  /** Parse a whole line; false if it is not exactly one well-formed JSON object. */
+  /**
+   * Parse a whole line; false if it is not exactly one well-formed JSON object,
+   * or if any object in it, at any level, repeats a member name.
+   */
   bool Parse (const std::string &text);
 
   bool HasInt (const std::string &key) const;
