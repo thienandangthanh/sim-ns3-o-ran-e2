@@ -2,7 +2,8 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only
  *
- * Inbound E2 control path of the ns3-e2-ipc stream (v1 minor 1, pacing minor 2).
+ * Inbound E2 control path of the ns3-e2-ipc stream (v1 minor 1, pacing minor 2,
+ * UE ID form minor 4).
  */
 
 #include <ns3/e2-control-hub.h>
@@ -36,7 +37,19 @@ Ptr<E2ControlHub> g_hub;
 
 /** Exit code of a run ended by a pacing abort (freeze, then fail). */
 constexpr int kPacingAbortExit = 5;
+
+/** MeNB UE X2AP ID range (3GPP TS 36.423 §9.2.24, INTEGER (0..4095)). */
+constexpr int64_t kMaxX2apId = 4095;
+/** Macro eNB ID range: ENB-ID macro-eNB-ID, BIT STRING (SIZE (20)) (3GPP TS 36.423 ASN.1). */
+constexpr int64_t kMaxMacroEnbId = 0xFFFFF;
 } // namespace
+
+bool
+E2ControlApplyOrder (const E2IpcControl &a, const E2IpcControl &b)
+{
+  return std::tie (a.imsi, a.viaNodeId, a.targetCellId, a.ctlId) <
+         std::tie (b.imsi, b.viaNodeId, b.targetCellId, b.ctlId);
+}
 
 TypeId
 E2ControlHub::GetTypeId ()
@@ -119,10 +132,116 @@ E2ControlHub::GetGateTimeoutS () const
   return m_gateTimeoutS;
 }
 
-void
-E2ControlHub::SetHandoverHandler (HandoverHandler handler)
+bool
+E2ControlHub::IsStopping () const
 {
-  m_handler = handler;
+  return m_stopping;
+}
+
+void
+E2ControlHub::SetControlHandler (uint16_t nodeId, UeResolver resolver, ControlHandler handler)
+{
+  if (resolver.IsNull () || handler.IsNull ())
+    {
+      m_handlers.erase (nodeId);
+      return;
+    }
+  m_handlers[nodeId] = NodeHandler{resolver, handler};
+}
+
+void
+E2ControlHub::SetApplyOrder (ApplyOrder order)
+{
+  NS_ABORT_MSG_IF (order == nullptr, "E2ControlHub: null apply order");
+  m_applyOrder = order;
+}
+
+bool
+E2ControlHub::ParseControl (const E2IpcJsonReader &r, bool fromPacer, E2IpcControl &c)
+{
+  // The UE is named by ueId {mEnbUeX2apId, mnCellId} only: a line that still
+  // carries an IMSI, or has no ueId, is malformed
+  if (r.HasMember ("imsi") || !r.HasInt ("nodeId") || !r.HasInt ("ctlId") ||
+      !r.HasInt ("targetCellId") || !r.HasInt ("ueId", "mEnbUeX2apId") ||
+      !r.HasInt ("ueId", "mnCellId"))
+    {
+      return false;
+    }
+  // An agent forwards only E2SM-RC Style 5 action 3 (DC PSCell change) in a v1
+  // control line; the pacer's lines may omit them, but never name another
+  auto is = [&r] (const char *key, int64_t value, bool required) {
+    return r.HasMember (key) ? r.HasInt (key) && r.GetInt (key) == value : !required;
+  };
+  if (!is ("v", 1, !fromPacer) || !is ("style", 5, !fromPacer) || !is ("action", 3, !fromPacer))
+    {
+      return false;
+    }
+  const int64_t nodeId = r.GetInt ("nodeId");
+  const int64_t ctlId = r.GetInt ("ctlId");
+  const int64_t target = r.GetInt ("targetCellId");
+  const int64_t x2apId = r.GetInt ("ueId", "mEnbUeX2apId");
+  const int64_t mnCellId = r.GetInt ("ueId", "mnCellId");
+  if (nodeId < 0 || nodeId > 65535 || ctlId < 0 || target < 0 || target > 65535 || x2apId < 0 ||
+      x2apId > kMaxX2apId || mnCellId < 0 || mnCellId > kMaxMacroEnbId)
+    {
+      return false;
+    }
+  c.viaNodeId = static_cast<uint16_t> (nodeId);
+  c.ctlId = static_cast<uint64_t> (ctlId);
+  c.mEnbUeX2apId = static_cast<uint16_t> (x2apId);
+  c.mnCellId = static_cast<uint32_t> (mnCellId);
+  c.imsi = 0;
+  c.targetCellId = static_cast<uint16_t> (target);
+  c.afterSeq = r.HasInt ("afterSeq") ? r.GetInt ("afterSeq") : -1;
+  c.fromPacer = fromPacer;
+  return true;
+}
+
+void
+E2ControlHub::Receive (const E2IpcControl &c)
+{
+  // Not digested: the replay takes each control's UE identity from this record
+  E2IpcJsonWriter w;
+  w.BeginObject ();
+  w.Key ("type");
+  w.String ("control");
+  w.Key ("v");
+  w.Int (1);
+  w.Key ("viaNodeId");
+  w.Int (c.viaNodeId);
+  w.Key ("ctlId");
+  w.UInt (c.ctlId);
+  w.Key ("ueId");
+  w.BeginObject ();
+  w.Key ("mEnbUeX2apId");
+  w.Int (c.mEnbUeX2apId);
+  w.Key ("mnCellId");
+  w.Int (c.mnCellId);
+  w.EndObject ();
+  w.Key ("targetCellId");
+  w.Int (c.targetCellId);
+  w.Key ("afterSeq");
+  w.Int (c.afterSeq);
+  w.EndObject ();
+  WriteLog (w.Str () + "\n");
+}
+
+void
+E2ControlHub::Resolve (E2IpcControl &c) const
+{
+  auto it = m_handlers.find (c.viaNodeId);
+  c.imsi = it == m_handlers.end () ? 0 : it->second.resolver (c.mEnbUeX2apId, c.mnCellId);
+}
+
+void
+E2ControlHub::ResolveAndSort (std::vector<E2IpcControl> &batch) const
+{
+  // Every control first, so the sort key is each one's IMSI at this event
+  for (E2IpcControl &c : batch)
+    {
+      Resolve (c);
+    }
+  std::sort (batch.begin (), batch.end (), m_applyOrder);
 }
 
 void
@@ -178,23 +297,18 @@ E2ControlHub::OnInboundLine (uint16_t viaNodeId, const std::string &line)
       NS_LOG_WARN ("E2 IPC node " << viaNodeId << ": ignored inbound line " << line);
       return;
     }
-  if (!r.HasInt ("ctlId") || !r.HasInt ("imsi") || !r.HasInt ("targetCellId") ||
-      r.GetInt ("nodeId") != viaNodeId || r.GetInt ("imsi") < 0 || r.GetInt ("ctlId") < 0 ||
-      r.GetInt ("targetCellId") < 0 || r.GetInt ("targetCellId") > 65535)
+  E2IpcControl c;
+  if (r.GetInt ("nodeId") != viaNodeId || !ParseControl (r, false, c))
     {
       m_badLines++;
       std::clog << "E2 control: malformed control from node " << viaNodeId << ": " << line
                 << std::endl;
       return;
     }
-  E2IpcControl c;
-  c.viaNodeId = viaNodeId;
-  c.ctlId = static_cast<uint64_t> (r.GetInt ("ctlId"));
-  c.imsi = static_cast<uint64_t> (r.GetInt ("imsi"));
-  c.targetCellId = static_cast<uint16_t> (r.GetInt ("targetCellId"));
-  c.afterSeq = r.HasInt ("afterSeq") ? r.GetInt ("afterSeq") : -1;
+  Receive (c);
   if (m_stopping)
     {
+      Resolve (c); // a late line names the UE resolved when it is received
       const int64_t now = Simulator::Now ().GetNanoSeconds ();
       Answer (c, m_appliedSeq, now, now, false, "late", 0);
       return;
@@ -260,10 +374,10 @@ E2ControlHub::Apply (uint64_t seq)
   ApplyDue (m_appliedSeq); // batches decided n periods ago (δ = n·T) go before this barrier's own
   std::vector<E2IpcControl> batch;
   batch.swap (m_buffered);
-  std::sort (batch.begin (), batch.end (), [] (const E2IpcControl &a, const E2IpcControl &b) {
-    return std::tie (a.imsi, a.viaNodeId, a.targetCellId, a.ctlId) <
-           std::tie (b.imsi, b.viaNodeId, b.targetCellId, b.ctlId);
-  });
+  // Resolved at this barrier: the apply event at δ = 0, and the rx of a late line
+  // or of a deferred one that the stop cancels (a deferred batch is resolved again
+  // in its apply event)
+  ResolveAndSort (batch);
   const int64_t now = Simulator::Now ().GetNanoSeconds ();
   const bool synchronous = m_actuationDelay.IsZero ();
   uint64_t late = 0;
@@ -302,11 +416,29 @@ E2ControlHub::Apply (uint64_t seq)
 void
 E2ControlHub::ApplyOne (const E2IpcControl &c, int64_t rxSeq, int64_t rxNs)
 {
-  NS_ABORT_MSG_IF (m_handler.IsNull (),
-                   "E2 control received but no master node registered a handover handler");
-  E2ControlResult res = m_handler (c.imsi, c.targetCellId);
-  Answer (c, rxSeq, rxNs, Simulator::Now ().GetNanoSeconds (), res.applied,
-          res.applied ? "" : res.cause, res.sourceCellId);
+  const int64_t now = Simulator::Now ().GetNanoSeconds ();
+  if (c.imsi == 0)
+    {
+      Answer (c, rxSeq, rxNs, now, false, kUnknownUe, 0);
+      return;
+    }
+  auto it = m_handlers.find (c.viaNodeId);
+  NS_ABORT_MSG_IF (it == m_handlers.end (),
+                   "E2 control resolved at node " << c.viaNodeId << ", which has no handler");
+  E2ControlResult res = it->second.handler (c.imsi, c.mnCellId, c.targetCellId);
+  Answer (c, rxSeq, rxNs, now, res.applied, res.applied ? "" : res.cause, res.sourceCellId);
+}
+
+void
+E2ControlHub::ApplyBatch (const PendingBatch &b)
+{
+  // Resolution and order at the apply event (δ > 0); b keeps its rx resolution
+  std::vector<E2IpcControl> controls = b.controls;
+  ResolveAndSort (controls);
+  for (const E2IpcControl &c : controls)
+    {
+      ApplyOne (c, b.rxSeq, b.rxNs);
+    }
 }
 
 void
@@ -341,10 +473,7 @@ E2ControlHub::ApplyDue (int64_t seq)
   m_dueAtSeq.erase (it);
   for (const PendingBatch &b : due)
     {
-      for (const E2IpcControl &c : b.controls)
-        {
-          ApplyOne (c, b.rxSeq, b.rxNs);
-        }
+      ApplyBatch (b);
     }
 }
 
@@ -355,10 +484,7 @@ E2ControlHub::ApplyScheduled (uint64_t id)
   NS_ASSERT (it != m_scheduled.end ());
   PendingBatch b = std::move (it->second);
   m_scheduled.erase (it);
-  for (const E2IpcControl &c : b.controls)
-    {
-      ApplyOne (c, b.rxSeq, b.rxNs);
-    }
+  ApplyBatch (b);
 }
 
 void
@@ -494,8 +620,9 @@ E2ControlHub::OnEmitterStopping (uint16_t nodeId)
             }
         }
       m_dueAtSeq.clear ();
-      for (const E2IpcControl &c : batch)
+      for (E2IpcControl &c : batch)
         {
+          Resolve (c); // received now, at the stop
           Answer (c, m_appliedSeq, now, now, false, "late", 0);
         }
       if (m_pacer.IsOpen ())
@@ -656,19 +783,19 @@ E2ControlHub::OnPacerLine (const std::string &line)
     {
       m_pacerAbort = r.GetString ("reason").empty () ? "abort" : r.GetString ("reason");
     }
-  else if (type == "control" && r.HasInt ("nodeId") && r.HasInt ("ctlId") && r.HasInt ("imsi") &&
-           r.HasInt ("targetCellId"))
+  else if (type == "control")
     {
       // Scripted lock-step (Fallback-1) and ledger replay: the pacer stands in for the agents
       E2IpcControl c;
-      c.viaNodeId = static_cast<uint16_t> (r.GetInt ("nodeId"));
-      c.ctlId = static_cast<uint64_t> (r.GetInt ("ctlId"));
-      c.imsi = static_cast<uint64_t> (r.GetInt ("imsi"));
-      c.targetCellId = static_cast<uint16_t> (r.GetInt ("targetCellId"));
-      c.afterSeq = r.HasInt ("afterSeq") ? r.GetInt ("afterSeq") : -1;
-      c.fromPacer = true;
+      if (!ParseControl (r, true, c))
+        {
+          m_pacerAbort = "malformed pacer control " + line;
+          return;
+        }
+      Receive (c);
       if (m_stopping)
         {
+          Resolve (c); // a late line names the UE resolved when it is received
           const int64_t now = Simulator::Now ().GetNanoSeconds ();
           Answer (c, m_appliedSeq, now, now, false, "late", 0);
         }

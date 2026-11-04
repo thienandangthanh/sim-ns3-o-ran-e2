@@ -24,12 +24,14 @@ E2IpcJsonReader::Parse (const std::string &text)
   m_depth = 0;
   m_ints.clear ();
   m_strings.clear ();
+  m_members.clear ();
+  m_nestedInts.clear ();
   SkipSpace ();
   if (m_pos >= text.size () || text[m_pos] != '{')
     {
       return false;
     }
-  if (!ParseValue (false, ""))
+  if (!ParseValue (0, "", ""))
     {
       return false;
     }
@@ -61,6 +63,31 @@ E2IpcJsonReader::GetString (const std::string &key) const
 {
   auto it = m_strings.find (key);
   return it == m_strings.end () ? std::string () : it->second;
+}
+
+bool
+E2IpcJsonReader::HasMember (const std::string &key) const
+{
+  return m_members.count (key) != 0;
+}
+
+bool
+E2IpcJsonReader::HasInt (const std::string &parent, const std::string &key) const
+{
+  auto it = m_nestedInts.find (parent);
+  return it != m_nestedInts.end () && it->second.count (key) != 0;
+}
+
+int64_t
+E2IpcJsonReader::GetInt (const std::string &parent, const std::string &key) const
+{
+  auto it = m_nestedInts.find (parent);
+  if (it == m_nestedInts.end ())
+    {
+      return 0;
+    }
+  auto jt = it->second.find (key);
+  return jt == it->second.end () ? 0 : jt->second;
 }
 
 void
@@ -156,7 +183,7 @@ E2IpcJsonReader::ParseString (std::string &out)
 }
 
 bool
-E2IpcJsonReader::ParseNumber (bool keep, const std::string &key)
+E2IpcJsonReader::ParseNumber (int level, const std::string &parent, const std::string &key)
 {
   const std::string &t = *m_text;
   size_t start = m_pos;
@@ -180,7 +207,7 @@ E2IpcJsonReader::ParseNumber (bool keep, const std::string &key)
       integer = false;
       m_pos++;
     }
-  if (keep && integer)
+  if (level != 0 && integer)
     {
       int64_t v = 0;
       auto r = std::from_chars (t.data () + start, t.data () + m_pos, v);
@@ -188,19 +215,30 @@ E2IpcJsonReader::ParseNumber (bool keep, const std::string &key)
         {
           return false;
         }
-      m_ints[key] = v;
+      if (level == 1)
+        {
+          m_ints[key] = v;
+        }
+      else
+        {
+          m_nestedInts[parent][key] = v;
+        }
     }
   return true;
 }
 
 bool
-E2IpcJsonReader::ParseValue (bool topLevelMember, const std::string &key)
+E2IpcJsonReader::ParseValue (int level, const std::string &parent, const std::string &key)
 {
   const std::string &t = *m_text;
   SkipSpace ();
   if (m_pos >= t.size ())
     {
       return false;
+    }
+  if (level == 1)
+    {
+      m_members.insert (key);
     }
   char c = t[m_pos];
   if (c == '{' || c == '[')
@@ -211,7 +249,19 @@ E2IpcJsonReader::ParseValue (bool topLevelMember, const std::string &key)
         }
       bool object = c == '{';
       char close = object ? '}' : ']';
-      bool outer = m_depth == 1;
+      // Members of the top-level object are level 1; members of an object that is a
+      // level-1 member are level 2 (parent = its name); nothing deeper is kept
+      int childLevel = 0;
+      std::string childParent;
+      if (object && m_depth == 1)
+        {
+          childLevel = 1;
+        }
+      else if (object && level == 1)
+        {
+          childLevel = 2;
+          childParent = key;
+        }
       m_pos++;
       SkipSpace ();
       if (m_pos < t.size () && t[m_pos] == close)
@@ -237,7 +287,7 @@ E2IpcJsonReader::ParseValue (bool topLevelMember, const std::string &key)
                 }
               m_pos++;
             }
-          if (!ParseValue (object && outer, member))
+          if (!ParseValue (childLevel, childParent, member))
             {
               return false;
             }
@@ -263,7 +313,7 @@ E2IpcJsonReader::ParseValue (bool topLevelMember, const std::string &key)
         {
           return false;
         }
-      if (topLevelMember)
+      if (level == 1)
         {
           m_strings[key] = v;
         }
@@ -281,7 +331,7 @@ E2IpcJsonReader::ParseValue (bool topLevelMember, const std::string &key)
     {
       return ParseLiteral ("null");
     }
-  return ParseNumber (topLevelMember, key);
+  return ParseNumber (level, parent, key);
 }
 
 } // namespace ns3

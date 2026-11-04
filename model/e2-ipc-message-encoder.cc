@@ -163,7 +163,9 @@ EncodeE2IpcHello (const E2IpcNodeInfo &info, const std::string &runId, const std
   w.Key ("v");
   w.Int (1);
   w.Key ("minor");
-  w.Int (3); // 1: `control` / `controlAck`; 2: `pacing`, `step` and the barrier deadlines; 3: `ueContext`
+  // 1: `control` / `controlAck`; 2: `pacing`, `step` and the barrier deadlines; 3: `ueContext`;
+  // 4: `control` names its UE by `ueId` {mEnbUeX2apId, mnCellId} (no `imsi`), cause `unknownUe`
+  w.Int (4);
   w.Key ("nodeId");
   w.Int (info.nodeId);
   w.Key ("kind");

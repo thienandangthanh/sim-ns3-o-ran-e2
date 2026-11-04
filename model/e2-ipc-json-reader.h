@@ -10,14 +10,17 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 
 namespace ns3 {
 
 /**
  * Parses one JSON object and keeps its top-level members that are integers or
- * strings; nested objects, arrays, booleans, null and non-integer numbers are
- * validated and skipped (inbound control lines carry them only as diagnostics).
+ * strings, and the integer members of an object that is itself a top-level
+ * member (such as a control's `ueId`). Everything else (deeper objects, arrays,
+ * booleans, null, non-integer numbers) is validated and skipped; HasMember
+ * still reports a top-level member of any type.
  */
 class E2IpcJsonReader
 {
@@ -30,10 +33,21 @@ public:
   bool HasString (const std::string &key) const;
   std::string GetString (const std::string &key) const;
 
+  /** The top-level object has a member named key, whatever its type. */
+  bool HasMember (const std::string &key) const;
+
+  /** Integer member key of the object that is the top-level member parent. */
+  bool HasInt (const std::string &parent, const std::string &key) const;
+  int64_t GetInt (const std::string &parent, const std::string &key) const;
+
 private:
-  bool ParseValue (bool topLevelMember, const std::string &key);
+  /**
+   * level 1: a member of the top-level object; level 2: a member of an object
+   * that is a level-1 member (named parent); 0: anything else (not kept).
+   */
+  bool ParseValue (int level, const std::string &parent, const std::string &key);
   bool ParseString (std::string &out);
-  bool ParseNumber (bool keep, const std::string &key);
+  bool ParseNumber (int level, const std::string &parent, const std::string &key);
   bool ParseLiteral (const char *word);
   void SkipSpace ();
 
@@ -42,6 +56,8 @@ private:
   int m_depth{0};
   std::map<std::string, int64_t> m_ints;
   std::map<std::string, std::string> m_strings;
+  std::set<std::string> m_members;
+  std::map<std::string, std::map<std::string, int64_t>> m_nestedInts;
 };
 
 } // namespace ns3

@@ -60,4 +60,5 @@ build_lib(
                  helper/mmwave-indication-message-helper.h
     LIBRARIES_TO_LINK
                     ${libcore}
+    TEST_SOURCES test/e2-control-order-test-suite.cc
 )

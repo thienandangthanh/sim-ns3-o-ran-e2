@@ -2,9 +2,11 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-only
  *
- * Inbound E2 control path of the ns3-e2-ipc stream (v1 minor 1): RC handover
- * controls that the out-of-process agents forward, applied once per E2 period
- * and recorded in a control ledger; optionally paced in lock-step (minor 2).
+ * Inbound E2 control path of the ns3-e2-ipc stream (v1 minor 1; UE ID form
+ * minor 4): E2SM-RC Style 5 action 3 controls (DC PSCell change) that the
+ * out-of-process agents forward, executed at the UE's source en-gNB, applied
+ * once per E2 period and recorded in a control ledger; optionally paced in
+ * lock-step (minor 2).
  */
 
 #ifndef E2_CONTROL_HUB_H
@@ -27,19 +29,30 @@
 namespace ns3 {
 
 class E2IpcEmitter;
+class E2IpcJsonReader;
 
 /** One `control` line as received from an agent (or injected by the pacer). */
 struct E2IpcControl
 {
   uint16_t viaNodeId{0};    //!< node whose agent forwarded the control
   uint64_t ctlId{0};        //!< agent-monotonic id; the agent's pending key
-  uint64_t imsi{0};         //!< UE (decimal IMSI)
+  uint16_t mEnbUeX2apId{0}; //!< ueId: the UE's MeNB UE X2AP ID (its RNTI at the master eNB)
+  uint32_t mnCellId{0};     //!< ueId: the master eNB's macro eNB ID (its cell ID)
+  uint64_t imsi{0};         //!< the UE that ueId names at viaNodeId, set by the hub; 0 if none
   uint16_t targetCellId{0}; //!< target secondary cell
   int64_t afterSeq{-1};     //!< last sample seq the agent had forwarded
   bool fromPacer{false};    //!< injected by the pacer (scripted lock-step, replay)
 };
 
-/** What the handover handler of the master node did with one control. */
+/**
+ * Apply order of the controls decided together: (imsi, viaNodeId, targetCellId,
+ * ctlId), on the IMSI the hub resolved at the control's node. Arrival order
+ * plays no part: two controls for one UE through one node apply lower target
+ * cell first, whatever their ctlIds.
+ */
+bool E2ControlApplyOrder (const E2IpcControl &a, const E2IpcControl &b);
+
+/** What a node's control handler did with one control. */
 struct E2ControlResult
 {
   bool applied{false};
@@ -52,15 +65,28 @@ struct E2ControlResult
  *
  * Emitters hand every inbound line to the hub. When the last registered
  * emitter has emitted sample seq k, the buffered controls are decided at that
- * barrier, in the order (imsi, viaNodeId, targetCellId, ctlId), and applied
- * through the handler registered by the LTE master device ActuationDelay (δ,
- * sim time) later: at δ = 0 synchronously at the barrier (no event, so ties
- * cannot reorder); when δ is a multiple of the E2 period T, at barrier
- * k + δ/T, after that seq's samples and before that barrier's own batch;
- * otherwise in one event at t_k + δ. The precheck, the handover, the ledger
- * line and the `controlAck` of a control happen together at apply time. A
- * control still buffered or pending, or arriving, when the emitters stop is
- * answered `refused` with cause `late` once and never applied.
+ * barrier, in E2ControlApplyOrder, and applied ActuationDelay (δ, sim time)
+ * later through the control handler registered for the control's viaNodeId
+ * (an en-gNB; the LTE eNB registers none): at δ = 0 synchronously at the
+ * barrier (no event, so ties cannot reorder); when δ is a multiple of the E2
+ * period T, at barrier k + δ/T, after that seq's samples and before that
+ * barrier's own batch; otherwise in one event at t_k + δ. The precheck, the
+ * handover, the ledger line and the `controlAck` of a control happen together
+ * at apply time.
+ *
+ * UE resolution: a control names its UE by ueId {mEnbUeX2apId, mnCellId}. The
+ * node's resolver maps it, reading state only, to the IMSI of the UE that the
+ * node serves as its current secondary node, or to 0. Every control of a batch
+ * is resolved before the batch is sorted, at the event that decides its
+ * outcome: the barrier at δ = 0, the apply event at δ > 0 (the batch is
+ * re-sorted there). A control with no resolved UE (or through a node with no
+ * handler) is refused `unknownUe` with ledger imsi 0. A `late` line carries the
+ * IMSI resolved when it was received: at its barrier, or, for a control
+ * answered at the stop, at the stop (where the nodes have deregistered, so 0).
+ *
+ * A control still buffered or pending, or arriving, when the emitters stop is
+ * answered `refused` with cause `late` once and never applied. Each inbound
+ * control is recorded, as received, in e2-pacing-log.jsonl.
  *
  * Pacing "free" (default): the controls are applied right after the last
  * emitter's sample k; without controls the hub writes nothing and schedules
@@ -85,8 +111,20 @@ struct E2ControlResult
 class E2ControlHub : public Object
 {
 public:
-  /** Applies one control; returns the outcome (called on the simulation thread). */
-  typedef Callback<E2ControlResult, uint64_t, uint16_t> HandoverHandler;
+  /**
+   * Maps (mEnbUeX2apId, mnCellId) to the IMSI of the UE that the node serves as
+   * its current secondary node, or 0; reads state only.
+   */
+  typedef Callback<uint64_t, uint16_t, uint32_t> UeResolver;
+
+  /** Applies one control to a resolved UE: (imsi, mnCellId, targetCellId). */
+  typedef Callback<E2ControlResult, uint64_t, uint32_t, uint16_t> ControlHandler;
+
+  /** Sort order of a batch (E2ControlApplyOrder unless a test swaps it). */
+  typedef bool (*ApplyOrder) (const E2IpcControl &, const E2IpcControl &);
+
+  /** Ledger cause of a control whose ueId resolves to no UE at its node. */
+  static constexpr const char *kUnknownUe = "unknownUe";
 
   static TypeId GetTypeId ();
 
@@ -96,8 +134,14 @@ public:
   E2ControlHub ();
   ~E2ControlHub () override;
 
-  /** Registered by the LTE master device, which owns the UE contexts. */
-  void SetHandoverHandler (HandoverHandler handler);
+  /**
+   * Registered by each en-gNB for its nodeId: controls forwarded through that
+   * node are resolved and applied there. Null callbacks deregister the node.
+   */
+  void SetControlHandler (uint16_t nodeId, UeResolver resolver, ControlHandler handler);
+
+  /** Replace the batch sort order; only a test that proves the order is asserted needs it. */
+  void SetApplyOrder (ApplyOrder order);
 
   /** Called by every emitter in Start. traceDir is the emitter's trace directory. */
   void RegisterEmitter (uint16_t nodeId, E2IpcEmitter *emitter, const std::string &traceDir,
@@ -111,6 +155,9 @@ public:
 
   /** Emitter nodeId is stopping: everything still buffered is answered late. */
   void OnEmitterStopping (uint16_t nodeId);
+
+  /** The first emitter has stopped: inbound lines are no longer read. */
+  bool IsStopping () const;
 
   /** "free" or "lockstep" (sent in every hello). */
   std::string GetPacing () const;
@@ -127,8 +174,22 @@ private:
     EventId event; //!< set only for an event-scheduled batch (δ not a multiple of T)
   };
 
+  /** The handlers of one node. */
+  struct NodeHandler
+  {
+    UeResolver resolver;
+    ControlHandler handler;
+  };
+
+  /** A control line's members, checked against the IPC control form; false if malformed. */
+  static bool ParseControl (const E2IpcJsonReader &r, bool fromPacer, E2IpcControl &c);
+  /** Record an inbound control, as received, in the pacing log. */
+  void Receive (const E2IpcControl &c);
+  void Resolve (E2IpcControl &c) const;
+  void ResolveAndSort (std::vector<E2IpcControl> &batch) const;
   void Apply (uint64_t seq);
   void ApplyOne (const E2IpcControl &c, int64_t rxSeq, int64_t rxNs);
+  void ApplyBatch (const PendingBatch &b);
   void ApplyDue (int64_t seq);
   void ApplyScheduled (uint64_t id);
   void Defer (std::vector<E2IpcControl> controls, int64_t rxSeq, int64_t rxNs);
@@ -155,7 +216,8 @@ private:
   std::string m_defaultTraceDir;
   std::FILE *m_ledger{nullptr};
   std::FILE *m_log{nullptr};
-  HandoverHandler m_handler;
+  std::map<uint16_t, NodeHandler> m_handlers; //!< control handler per viaNodeId
+  ApplyOrder m_applyOrder{&E2ControlApplyOrder};
   std::map<uint16_t, E2IpcEmitter *> m_emitters;
   std::map<uint16_t, int64_t> m_lastSeq; //!< last emitted seq per registered node
   int64_t m_appliedSeq{-1};              //!< last seq whose controls were applied
