@@ -36,8 +36,11 @@ public:
 
   ~MmWaveIndicationMessageHelper ();
 
-  // pdcpSduVolumeUl/Dl: the cell's PDCP SDU volume in the period, in kbit (DRB.PdcpSduVolumeUL/DL)
-  void FillCuUpValues (std::string plmId, long pdcpSduVolumeUl, long pdcpSduVolumeDl);
+  // In kbit over the report period: pdcpSduVolumeUl/Dl, the PDCP SDU volume of the cell's own
+  // PDCP (DRB.PdcpSduVolumeUL/DL); pdcpSduVolumeX2Ul/X2Dl, the PDCP SDU volume the cell sends
+  // and receives on X2 (DRB.PdcpSduVolumeX2UL/X2DL)
+  void FillCuUpValues (std::string plmId, long pdcpSduVolumeUl, long pdcpSduVolumeDl,
+                       long pdcpSduVolumeX2Ul, long pdcpSduVolumeX2Dl);
 
   void AddCuUpUePmItem (std::string ueImsiComplete, long txPdcpPduBytesNrRlc, long txPdcpPduNrRlc);
 
